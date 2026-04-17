@@ -25,10 +25,20 @@ A full-stack mobile app built with React Native (Expo) that helps households tra
 
 ## Screenshots
 
-*Coming soon*
+## Screenshots
+
+## Screenshots
+
+<p float="left">
+  <img src="screenshots/Home_Inventory-List-SS.png" width="200" />
+  <img src="screenshots/Home_Inventory-Barcode-SS.png" width="200" />
+  <img src="screenshots/Home_Inventory-Add_Item-SS.png" width="200" />
+  <img src="screenshots/Home_Inventory-Shopping_List-SS.png" width="200" />
+</p>
 
 ## Setup
 
 1. Clone the repo
 2. Run `npm install`
-3. Create a `supabase.js` file with your own Supabase URL and anon key:
+3. Create a `supabase.js` file with your own Supabase URL and anon key
+4. Run `npx expo start`
