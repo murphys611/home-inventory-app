@@ -23,9 +23,6 @@ A full-stack mobile app built with React Native (Expo) that helps households tra
 - Open Food Facts API
 - UPC Item DB API
 
-## Screenshots
-
-## Screenshots
 
 ## Screenshots
 
