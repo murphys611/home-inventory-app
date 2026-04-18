@@ -7,8 +7,10 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase } from './supabase';
 import { Ionicons } from '@expo/vector-icons';
+import { supabase } from './supabase';
+import AuthScreen from './AuthScreen';
+import HouseholdScreen from './HouseholdScreen';
 
 const CATEGORIES = [
   { label: 'Food', value: 'food', color: '#e67e22' },
@@ -28,6 +30,9 @@ Notifications.setNotificationHandler({
 });
 
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [householdId, setHouseholdId] = useState(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
   const [permission, requestPermission] = useCameraPermissions();
   const [activeTab, setActiveTab] = useState('inventory');
   const [scanning, setScanning] = useState(false);
@@ -37,34 +42,121 @@ export default function App() {
   const [filterCategory, setFilterCategory] = useState('all');
   const [sortBy, setSortBy] = useState('name');
   const [showSortOptions, setShowSortOptions] = useState(false);
-
-  // Add form state
   const [productName, setProductName] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [productImage, setProductImage] = useState(null);
   const [currentBarcode, setCurrentBarcode] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('food');
   const [scanStatus, setScanStatus] = useState('');
-
+  const [householdCode, setHouseholdCode] = useState('');
+  const [householdMembers, setHouseholdMembers] = useState([]);
+  const [profileName, setProfileName] = useState('');
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState('');
   const scanned = useRef(false);
   const cameraReady = useRef(false);
 
   useEffect(() => {
-    loadInventory();
-    requestNotificationPermission();
-
-    const channel = supabase
-      .channel('inventory-changes')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'inventory' },
-        () => { loadInventory(); }
-      )
-      .subscribe();
-
-    return () => supabase.removeChannel(channel);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setCheckingAuth(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
-  // Auto open camera when scan tab is tapped
+  useEffect(() => {
+    if (user) loadHousehold();
+  }, [user]);
+
+  const loadHousehold = async () => {
+    try {
+      const { data } = await supabase
+        .from('household_members')
+        .select('household_id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (data) {
+        setHouseholdId(data.household_id);
+
+        const { data: household } = await supabase
+          .from('households')
+          .select('code')
+          .eq('id', data.household_id)
+          .single();
+        if (household) setHouseholdCode(household.code);
+
+        const { data: myProfile } = await supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('id', user.id)
+          .single();
+        if (myProfile) setProfileName(myProfile.full_name || '');
+
+        const { data: members } = await supabase
+          .from('household_members')
+          .select('user_id, joined_at')
+          .eq('household_id', data.household_id);
+
+        if (members) {
+          const { data: profiles } = await supabase
+            .from('profiles')
+            .select('id, full_name')
+            .in('id', members.map(m => m.user_id));
+
+          const membersWithNames = members.map(member => ({
+            ...member,
+            full_name: profiles?.find(p => p.id === member.user_id)?.full_name || 'Unknown'
+          }));
+          setHouseholdMembers(membersWithNames);
+        }
+      }
+    } catch (e) {
+      console.log('No household found');
+    }
+  };
+
+  const saveName = async () => {
+    try {
+      const { data: existing } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', user.id)
+        .single();
+
+      if (existing) {
+        await supabase.from('profiles').update({ full_name: newName }).eq('id', user.id);
+      } else {
+        await supabase.from('profiles').insert([{ id: user.id, full_name: newName }]);
+      }
+      setProfileName(newName);
+      setEditingName(false);
+      loadHousehold();
+    } catch (e) {
+      Alert.alert('Failed to save name.');
+    }
+  };
+
+  useEffect(() => {
+    if (householdId) {
+      loadInventory();
+      requestNotificationPermission();
+
+      const channel = supabase
+        .channel('inventory-changes')
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'inventory' },
+          () => { loadInventory(); }
+        )
+        .subscribe();
+
+      return () => supabase.removeChannel(channel);
+    }
+  }, [householdId]);
+
   useEffect(() => {
     if (activeTab === 'scan') {
       if (!permission?.granted) {
@@ -102,7 +194,10 @@ export default function App() {
 
   const loadInventory = async () => {
     try {
-      const { data, error } = await supabase.from('inventory').select('*');
+      const { data, error } = await supabase
+        .from('inventory')
+        .select('*')
+        .eq('household_id', householdId);
       if (error) throw error;
       if (data) setInventory(data);
     } catch (e) {
@@ -179,7 +274,6 @@ export default function App() {
 
   const lookupProduct = async (barcode) => {
     setCurrentBarcode(barcode);
-
     const cached = await checkLocalCache(barcode);
     if (cached) {
       const existing = inventory.find(item => item.barcode === barcode);
@@ -245,7 +339,6 @@ export default function App() {
             setActiveTab('add');
           }
         } else {
-          // Not found — go to add tab with empty form
           setProductName('');
           setProductImage(null);
           setSelectedCategory('other');
@@ -293,6 +386,7 @@ export default function App() {
       quantity: quantity,
       image: productImage,
       category: selectedCategory,
+      household_id: householdId,
     };
     if (currentBarcode) {
       saveToLocalCache(currentBarcode, productName, selectedCategory, productImage);
@@ -367,7 +461,17 @@ export default function App() {
 
   const shoppingList = inventory.filter(item => parseInt(item.quantity) === 0);
 
-  // ─── SCAN SCREEN ───────────────────────────────────────────
+  if (checkingAuth) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f4f4f4' }}>
+        <ActivityIndicator size="large" color="#27ae60" />
+      </View>
+    );
+  }
+
+  if (!user) return <AuthScreen />;
+  if (!householdId) return <HouseholdScreen user={user} onHouseholdJoined={setHouseholdId} />;
+
   if (activeTab === 'scan' && scanning) {
     return (
       <View style={{ flex: 1 }}>
@@ -399,7 +503,6 @@ export default function App() {
     );
   }
 
-  // ─── LOOKUP IN PROGRESS ────────────────────────────────────
   if (activeTab === 'scan' && scanStatus) {
     return (
       <View style={styles.lookupScreen}>
@@ -409,22 +512,18 @@ export default function App() {
     );
   }
 
-  // ─── MAIN APP ──────────────────────────────────────────────
   return (
     <View style={styles.container}>
 
-      {/* ── INVENTORY TAB ── */}
       {activeTab === 'inventory' && (
         <View style={styles.screen}>
           <Text style={styles.title}>Home Inventory</Text>
-
           <TextInput
             style={styles.searchBar}
             placeholder="🔍 Search inventory..."
             value={searchQuery}
             onChangeText={setSearchQuery}
           />
-
           <View style={styles.filterSortRow}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
               <TouchableOpacity
@@ -449,7 +548,6 @@ export default function App() {
               <Text style={styles.sortBtnText}>⇅ Sort</Text>
             </TouchableOpacity>
           </View>
-
           {showSortOptions && (
             <View style={styles.sortDropdown}>
               {[
@@ -469,7 +567,6 @@ export default function App() {
               ))}
             </View>
           )}
-
           {loading ? (
             <View style={styles.emptyState}>
               <ActivityIndicator size="large" color="#2c3e50" />
@@ -533,12 +630,9 @@ export default function App() {
         </View>
       )}
 
-      {/* ── ADD TAB ── */}
       {activeTab === 'add' && (
         <ScrollView style={styles.screen} contentContainerStyle={styles.addContent}>
           <Text style={styles.title}>Add Item</Text>
-
-          {/* Image */}
           <View style={styles.addImageRow}>
             {productImage ? (
               <Image source={{ uri: productImage }} style={styles.addPreviewImage} />
@@ -556,8 +650,6 @@ export default function App() {
               </TouchableOpacity>
             </View>
           </View>
-
-          {/* Name */}
           <Text style={styles.formLabel}>Product Name</Text>
           <TextInput
             style={styles.formInput}
@@ -565,8 +657,6 @@ export default function App() {
             value={productName}
             onChangeText={setProductName}
           />
-
-          {/* Quantity */}
           <Text style={styles.formLabel}>Quantity</Text>
           <TextInput
             style={[styles.formInput, { width: 80 }]}
@@ -575,8 +665,6 @@ export default function App() {
             onChangeText={setQuantity}
             keyboardType="numeric"
           />
-
-          {/* Category */}
           <Text style={styles.formLabel}>Category</Text>
           <View style={styles.categoryRow}>
             {CATEGORIES.map(cat => (
@@ -591,12 +679,9 @@ export default function App() {
               </TouchableOpacity>
             ))}
           </View>
-
-          {/* Confirm Button */}
           <TouchableOpacity style={styles.confirmBtn} onPress={addItem}>
             <Text style={styles.confirmBtnText}>Add to Inventory</Text>
           </TouchableOpacity>
-
           <TouchableOpacity style={styles.cancelFormBtn} onPress={() => {
             setProductName('');
             setQuantity('1');
@@ -610,7 +695,6 @@ export default function App() {
         </ScrollView>
       )}
 
-      {/* ── SHOPPING TAB ── */}
       {activeTab === 'shopping' && (
         <View style={styles.screen}>
           <Text style={styles.title}>Shopping List</Text>
@@ -648,44 +732,138 @@ export default function App() {
         </View>
       )}
 
-      {/* ── BOTTOM TAB BAR ── */}
-<View style={styles.tabBar}>
-  <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('inventory')}>
-    <Ionicons name={activeTab === 'inventory' ? 'grid' : 'grid-outline'} size={24} color={activeTab === 'inventory' ? '#27ae60' : '#999'} />
-    <Text style={[styles.tabLabel, activeTab === 'inventory' && styles.tabLabelActive]}>Inventory</Text>
-  </TouchableOpacity>
+      {activeTab === 'profile' && (
+        <ScrollView style={styles.screen}>
+          <Text style={styles.title}>Profile</Text>
 
-  <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('scan')}>
-    <View style={styles.scanTabBtn}>
-      <Ionicons name="barcode-outline" size={28} color="white" />
-    </View>
-    <Text style={[styles.tabLabel, activeTab === 'scan' && styles.tabLabelActive]}>Scan</Text>
-  </TouchableOpacity>
+          <View style={styles.profileCard}>
+            <Ionicons name="person-circle-outline" size={60} color="#2c3e50" />
+            <Text style={styles.profileEmail}>{user.email}</Text>
+            {editingName ? (
+              <View style={styles.editNameRow}>
+                <TextInput
+                  style={styles.editNameInput}
+                  value={newName}
+                  onChangeText={setNewName}
+                  placeholder="Enter your name"
+                  autoFocus
+                />
+                <TouchableOpacity style={styles.saveNameBtn} onPress={saveName}>
+                  <Text style={styles.saveNameBtnText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity onPress={() => { setNewName(profileName); setEditingName(true); }}>
+                <Text style={styles.editNameLink}>
+                  {profileName ? profileName : '+ Add your name'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
-  <TouchableOpacity style={styles.tabItem} onPress={() => {
-    setProductName('');
-    setQuantity('1');
-    setProductImage(null);
-    setCurrentBarcode(null);
-    setSelectedCategory('food');
-    setActiveTab('add');
-  }}>
-    <Ionicons name={activeTab === 'add' ? 'add-circle' : 'add-circle-outline'} size={24} color={activeTab === 'add' ? '#27ae60' : '#999'} />
-    <Text style={[styles.tabLabel, activeTab === 'add' && styles.tabLabelActive]}>Add Manually</Text>
-  </TouchableOpacity>
+          <Text style={styles.sectionHeader}>Your Household</Text>
+          <View style={styles.profileCard}>
+            <View style={styles.codeRow}>
+              <Text style={styles.codeLabel}>Join Code</Text>
+              <View style={styles.codeBadge}>
+                <Text style={styles.codeText}>{householdCode}</Text>
+              </View>
+            </View>
+            <Text style={styles.codeHint}>Share this code with household members</Text>
+          </View>
 
-  <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('shopping')}>
-    <View>
-      <Ionicons name={activeTab === 'shopping' ? 'cart' : 'cart-outline'} size={24} color={activeTab === 'shopping' ? '#27ae60' : '#999'} />
-      {shoppingList.length > 0 && (
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>{shoppingList.length}</Text>
-        </View>
+          <Text style={styles.sectionHeader}>Members ({householdMembers.length})</Text>
+          <View style={styles.profileCard}>
+            {householdMembers.map((member, index) => (
+              <View key={member.user_id} style={[styles.memberRow, index < householdMembers.length - 1 && styles.memberRowBorder]}>
+                <Ionicons name="person-circle-outline" size={36} color="#2c3e50" />
+                <View style={styles.memberInfo}>
+                  <Text style={styles.memberName}>{member.full_name || 'Unknown'}</Text>
+                  <Text style={styles.memberJoined}>
+                    Joined {new Date(member.joined_at).toLocaleDateString()}
+                  </Text>
+                </View>
+                {member.user_id === user.id && (
+                  <View style={styles.youBadge}>
+                    <Text style={styles.youBadgeText}>You</Text>
+                  </View>
+                )}
+              </View>
+            ))}
+          </View>
+
+          <TouchableOpacity
+            style={styles.logoutBtn}
+            onPress={() => {
+              Alert.alert(
+                'Log Out',
+                'Are you sure you want to log out?',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Log Out',
+                    style: 'destructive',
+                    onPress: async () => {
+                      await supabase.auth.signOut();
+                      setHouseholdId(null);
+                      setInventory([]);
+                      setHouseholdMembers([]);
+                      setHouseholdCode('');
+                      setActiveTab('inventory');
+                    }
+                  }
+                ]
+              );
+            }}
+          >
+            <Text style={styles.logoutBtnText}>Log Out</Text>
+          </TouchableOpacity>
+          <View style={{ height: 40 }} />
+        </ScrollView>
       )}
-        </View>
-      <Text style={[styles.tabLabel, activeTab === 'shopping' && styles.tabLabelActive]}>Shopping</Text>
-      </TouchableOpacity>
-    </View>
+
+      <View style={styles.tabBar}>
+        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('inventory')}>
+          <Ionicons name={activeTab === 'inventory' ? 'grid' : 'grid-outline'} size={24} color={activeTab === 'inventory' ? '#27ae60' : '#999'} />
+          <Text style={[styles.tabLabel, activeTab === 'inventory' && styles.tabLabelActive]}>Inventory</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('scan')}>
+          <View style={styles.scanTabBtn}>
+            <Ionicons name="barcode-outline" size={28} color="white" />
+          </View>
+          <Text style={[styles.tabLabel, activeTab === 'scan' && styles.tabLabelActive]}>Scan</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.tabItem} onPress={() => {
+          setProductName('');
+          setQuantity('1');
+          setProductImage(null);
+          setCurrentBarcode(null);
+          setSelectedCategory('food');
+          setActiveTab('add');
+        }}>
+          <Ionicons name={activeTab === 'add' ? 'add-circle' : 'add-circle-outline'} size={24} color={activeTab === 'add' ? '#27ae60' : '#999'} />
+          <Text style={[styles.tabLabel, activeTab === 'add' && styles.tabLabelActive]}>Add</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('shopping')}>
+          <View>
+            <Ionicons name={activeTab === 'shopping' ? 'cart' : 'cart-outline'} size={24} color={activeTab === 'shopping' ? '#27ae60' : '#999'} />
+            {shoppingList.length > 0 && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{shoppingList.length}</Text>
+              </View>
+            )}
+          </View>
+          <Text style={[styles.tabLabel, activeTab === 'shopping' && styles.tabLabelActive]}>Shopping</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('profile')}>
+          <Ionicons name={activeTab === 'profile' ? 'person' : 'person-outline'} size={24} color={activeTab === 'profile' ? '#27ae60' : '#999'} />
+          <Text style={[styles.tabLabel, activeTab === 'profile' && styles.tabLabelActive]}>Profile</Text>
+        </TouchableOpacity>
+      </View>
 
     </View>
   );
@@ -694,11 +872,7 @@ export default function App() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f4f4' },
   screen: { flex: 1, paddingTop: 60, paddingHorizontal: 20 },
-
-  // Title
   title: { fontSize: 26, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center', marginBottom: 16 },
-
-  // Inventory
   searchBar: { backgroundColor: 'white', padding: 10, borderRadius: 8, fontSize: 14, marginBottom: 10 },
   filterSortRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   filterScroll: { flex: 1 },
@@ -733,8 +907,6 @@ const styles = StyleSheet.create({
   qtyNumber: { fontSize: 15, fontWeight: 'bold', color: '#2c3e50', minWidth: 20, textAlign: 'center' },
   qtyLow: { color: '#e74c3c' },
   deleteBtn: { color: '#e74c3c', fontSize: 16, fontWeight: 'bold' },
-
-  // Add Tab
   addContent: { paddingBottom: 40 },
   addImageRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 16 },
   addPreviewImage: { width: 100, height: 100, borderRadius: 12 },
@@ -752,13 +924,9 @@ const styles = StyleSheet.create({
   confirmBtnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   cancelFormBtn: { padding: 14, alignItems: 'center', marginTop: 8 },
   cancelFormBtnText: { color: '#999', fontSize: 15 },
-
-  // Shopping Tab
   shoppingItem: { backgroundColor: 'white', padding: 12, borderRadius: 8, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
   restockBtn: { backgroundColor: '#27ae60', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
   restockBtnText: { color: 'white', fontSize: 13, fontWeight: 'bold' },
-
-  // Scan Screen
   scanOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   scanTitle: { color: 'white', fontSize: 20, fontWeight: 'bold', marginBottom: 30 },
   scanBox: { width: 260, height: 160, borderWidth: 3, borderColor: '#27ae60', borderRadius: 12, marginBottom: 20 },
@@ -766,19 +934,35 @@ const styles = StyleSheet.create({
   scanCancelRow: { paddingBottom: 40, alignItems: 'center' },
   scanCancelBtn: { backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 30, paddingVertical: 14, borderRadius: 30 },
   scanCancelText: { color: 'white', fontSize: 16 },
-
-  // Lookup screen
   lookupScreen: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f4f4f4' },
   lookupText: { marginTop: 16, fontSize: 16, color: '#2c3e50' },
-
-  // Bottom Tab Bar
   tabBar: { flexDirection: 'row', backgroundColor: 'white', borderTopWidth: 1, borderTopColor: '#e0e0e0', paddingBottom: 24, paddingTop: 10 },
   tabItem: { flex: 1, alignItems: 'center', position: 'relative' },
-  tabIcon: { marginBottom: 2 },
   tabLabel: { fontSize: 11, color: '#999' },
   tabLabelActive: { color: '#27ae60', fontWeight: 'bold' },
   scanTabBtn: { width: 52, height: 52, borderRadius: 26, backgroundColor: '#27ae60', justifyContent: 'center', alignItems: 'center', marginTop: -20, shadowColor: '#27ae60', shadowOpacity: 0.4, shadowRadius: 8, elevation: 6 },
-  scanTabIcon: { color: 'white' },
   badge: { position: 'absolute', top: 0, right: 10, backgroundColor: '#e74c3c', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center' },
   badgeText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
+  profileCard: { backgroundColor: 'white', borderRadius: 12, padding: 20, marginBottom: 16 },
+  profileEmail: { fontSize: 16, color: '#2c3e50', fontWeight: 'bold', marginTop: 12 },
+  sectionHeader: { fontSize: 13, fontWeight: 'bold', color: '#999', marginBottom: 8, marginLeft: 4, textTransform: 'uppercase', letterSpacing: 1 },
+  codeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  codeLabel: { fontSize: 15, color: '#2c3e50', fontWeight: 'bold' },
+  codeBadge: { backgroundColor: '#2c3e50', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
+  codeText: { color: 'white', fontSize: 18, fontWeight: 'bold', letterSpacing: 3 },
+  codeHint: { fontSize: 12, color: '#999', marginTop: 8 },
+  memberRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 12 },
+  memberRowBorder: { borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
+  memberInfo: { flex: 1 },
+  memberName: { fontSize: 15, color: '#2c3e50', fontWeight: 'bold' },
+  memberJoined: { fontSize: 12, color: '#999', marginTop: 2 },
+  youBadge: { backgroundColor: '#27ae60', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  youBadgeText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
+  logoutBtn: { backgroundColor: '#e74c3c', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 16 },
+  logoutBtnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
+  editNameRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 8 },
+  editNameInput: { flex: 1, backgroundColor: '#f4f4f4', padding: 10, borderRadius: 8, fontSize: 15 },
+  saveNameBtn: { backgroundColor: '#27ae60', padding: 10, borderRadius: 8 },
+  saveNameBtnText: { color: 'white', fontWeight: 'bold' },
+  editNameLink: { color: '#27ae60', fontSize: 15, marginTop: 8, fontWeight: 'bold' },
 });
