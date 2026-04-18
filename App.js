@@ -1,3 +1,4 @@
+// ─── IMPORTS ───────────────────────────────────────────────────────────────
 import { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity, FlatList,
@@ -12,6 +13,9 @@ import { supabase } from './supabase';
 import AuthScreen from './AuthScreen';
 import HouseholdScreen from './HouseholdScreen';
 
+// ─── CONSTANTS ─────────────────────────────────────────────────────────────
+
+// Category definitions with labels, values, and colors
 const CATEGORIES = [
   { label: 'Food', value: 'food', color: '#e67e22' },
   { label: 'Cleaning', value: 'cleaning', color: '#2980b9' },
@@ -19,8 +23,11 @@ const CATEGORIES = [
   { label: 'Other', value: 'other', color: '#7f8c8d' },
 ];
 
+// Items at or below this quantity trigger a low stock alert
 const LOW_STOCK_THRESHOLD = 2;
 
+// ─── NOTIFICATION HANDLER ──────────────────────────────────────────────────
+// Configures how notifications appear when the app is in the foreground
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -29,48 +36,112 @@ Notifications.setNotificationHandler({
   }),
 });
 
+// ─── MAIN APP COMPONENT ────────────────────────────────────────────────────
 export default function App() {
-  const [user, setUser] = useState(null);
-  const [householdId, setHouseholdId] = useState(null);
-  const [checkingAuth, setCheckingAuth] = useState(true);
+
+  // ── Auth State ──────────────────────────────────────────────────────────
+  const [user, setUser] = useState(null);               // Logged in user object
+  const [householdId, setHouseholdId] = useState(null); // Current household ID
+  const [checkingAuth, setCheckingAuth] = useState(true); // Loading while checking session
+
+  // ── Camera Permission ───────────────────────────────────────────────────
   const [permission, requestPermission] = useCameraPermissions();
-  const [activeTab, setActiveTab] = useState('inventory');
-  const [scanning, setScanning] = useState(false);
-  const [inventory, setInventory] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterCategory, setFilterCategory] = useState('all');
-  const [sortBy, setSortBy] = useState('name');
-  const [showSortOptions, setShowSortOptions] = useState(false);
-  const [productName, setProductName] = useState('');
-  const [quantity, setQuantity] = useState('1');
-  const [productImage, setProductImage] = useState(null);
-  const [currentBarcode, setCurrentBarcode] = useState(null);
-  const [selectedCategory, setSelectedCategory] = useState('food');
-  const [scanStatus, setScanStatus] = useState('');
-  const [householdCode, setHouseholdCode] = useState('');
-  const [householdMembers, setHouseholdMembers] = useState([]);
-  const [profileName, setProfileName] = useState('');
-  const [editingName, setEditingName] = useState(false);
-  const [newName, setNewName] = useState('');
-  const scanned = useRef(false);
-  const cameraReady = useRef(false);
 
+  // ── Navigation ──────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState('inventory'); // Current active tab
+  const [scanning, setScanning] = useState(false);         // Whether camera is open
+
+  // ── Inventory State ─────────────────────────────────────────────────────
+  const [inventory, setInventory] = useState([]);     // All inventory items
+  const [loading, setLoading] = useState(true);       // Loading indicator for inventory
+
+  // ── Search, Filter & Sort ───────────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = useState('');         // Search bar text
+  const [filterCategory, setFilterCategory] = useState('all'); // Active category filter
+  const [sortBy, setSortBy] = useState('name');               // Active sort option
+  const [showSortOptions, setShowSortOptions] = useState(false); // Sort dropdown visibility
+
+  // ── Add Item Form State ─────────────────────────────────────────────────
+  const [productName, setProductName] = useState('');         // Product name input
+  const [quantity, setQuantity] = useState('1');              // Quantity input
+  const [productImage, setProductImage] = useState(null);     // Product image URI
+  const [currentBarcode, setCurrentBarcode] = useState(null); // Last scanned barcode
+  const [selectedCategory, setSelectedCategory] = useState('food'); // Selected category
+  const [scanStatus, setScanStatus] = useState('');           // Status message after scan
+
+  // ── Profile State ───────────────────────────────────────────────────────
+  const [householdCode, setHouseholdCode] = useState('');     // Household join code
+  const [householdMembers, setHouseholdMembers] = useState([]); // List of household members
+  const [profileName, setProfileName] = useState('');         // Current user's display name
+  const [editingName, setEditingName] = useState(false);      // Whether name edit is active
+  const [newName, setNewName] = useState('');                 // Name input while editing
+
+  // ── Refs ────────────────────────────────────────────────────────────────
+  const scanned = useRef(false);     // Prevents duplicate scans
+  const cameraReady = useRef(false); // Delays scan detection until camera is ready
+
+  // ─── AUTH LISTENER ─────────────────────────────────────────────────────
+  // Checks for an existing session on startup and listens for auth changes
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      setCheckingAuth(false);
-    });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-    return () => subscription.unsubscribe();
-  }, []);
+  const { data: { subscription } } = supabase.auth.onAuthStateChange(
+    async (event, session) => {
+      if (event === 'INITIAL_SESSION') {
+        setUser(session?.user ?? null);
+        setCheckingAuth(false);
+      } else {
+        setUser(session?.user ?? null);
+      }
+    }
+  );
 
+  return () => subscription.unsubscribe();
+}, []);
+
+  // ─── LOAD HOUSEHOLD WHEN USER LOGS IN ──────────────────────────────────
   useEffect(() => {
     if (user) loadHousehold();
   }, [user]);
 
+  // ─── LOAD INVENTORY WHEN HOUSEHOLD IS SET ──────────────────────────────
+  useEffect(() => {
+    if (householdId) {
+      loadInventory();
+      requestNotificationPermission();
+
+      // Subscribe to real-time inventory changes from Supabase
+      const channel = supabase
+        .channel('inventory-changes')
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'inventory' },
+          () => { loadInventory(); }
+        )
+        .subscribe();
+
+      return () => supabase.removeChannel(channel);
+    }
+  }, [householdId]);
+
+  // ─── AUTO OPEN CAMERA WHEN SCAN TAB IS TAPPED ──────────────────────────
+  useEffect(() => {
+    if (activeTab === 'scan') {
+      if (!permission?.granted) {
+        requestPermission().then(() => {
+          scanned.current = false;
+          setScanning(true);
+        });
+      } else {
+        scanned.current = false;
+        setScanning(true);
+      }
+    } else {
+      setScanning(false);
+      cameraReady.current = false;
+    }
+  }, [activeTab]);
+
+  // ─── HOUSEHOLD FUNCTIONS ────────────────────────────────────────────────
+
+  // Fetches the user's household, join code, profile name, and member list
   const loadHousehold = async () => {
     try {
       const { data } = await supabase
@@ -82,6 +153,7 @@ export default function App() {
       if (data) {
         setHouseholdId(data.household_id);
 
+        // Get household join code
         const { data: household } = await supabase
           .from('households')
           .select('code')
@@ -89,6 +161,7 @@ export default function App() {
           .single();
         if (household) setHouseholdCode(household.code);
 
+        // Get current user's profile name
         const { data: myProfile } = await supabase
           .from('profiles')
           .select('full_name')
@@ -96,6 +169,7 @@ export default function App() {
           .single();
         if (myProfile) setProfileName(myProfile.full_name || '');
 
+        // Get all household members and their profile names
         const { data: members } = await supabase
           .from('household_members')
           .select('user_id, joined_at')
@@ -119,6 +193,7 @@ export default function App() {
     }
   };
 
+  // Saves or updates the user's display name in the profiles table
   const saveName = async () => {
     try {
       const { data: existing } = await supabase
@@ -140,45 +215,15 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    if (householdId) {
-      loadInventory();
-      requestNotificationPermission();
+  // ─── NOTIFICATION FUNCTIONS ─────────────────────────────────────────────
 
-      const channel = supabase
-        .channel('inventory-changes')
-        .on('postgres_changes',
-          { event: '*', schema: 'public', table: 'inventory' },
-          () => { loadInventory(); }
-        )
-        .subscribe();
-
-      return () => supabase.removeChannel(channel);
-    }
-  }, [householdId]);
-
-  useEffect(() => {
-    if (activeTab === 'scan') {
-      if (!permission?.granted) {
-        requestPermission().then(() => {
-          scanned.current = false;
-          setScanning(true);
-        });
-      } else {
-        scanned.current = false;
-        setScanning(true);
-      }
-    } else {
-      setScanning(false);
-      cameraReady.current = false;
-    }
-  }, [activeTab]);
-
+  // Requests permission to send push notifications
   const requestNotificationPermission = async () => {
     const { status } = await Notifications.requestPermissionsAsync();
     if (status !== 'granted') console.log('Notification permission denied');
   };
 
+  // Fires an immediate push notification when an item is low or out of stock
   const sendLowStockNotification = async (itemName, qty) => {
     await Notifications.scheduleNotificationAsync({
       content: {
@@ -188,10 +233,13 @@ export default function App() {
           : `${itemName} is running low — only ${qty} left.`,
         sound: true,
       },
-      trigger: null,
+      trigger: null, // null = send immediately
     });
   };
 
+  // ─── INVENTORY FUNCTIONS ────────────────────────────────────────────────
+
+  // Loads all inventory items for the current household from Supabase
   const loadInventory = async () => {
     try {
       const { data, error } = await supabase
@@ -207,173 +255,7 @@ export default function App() {
     }
   };
 
-  const saveToLocalCache = async (barcode, name, category, image) => {
-    try {
-      const existing = await AsyncStorage.getItem('barcodeCache');
-      const cache = existing ? JSON.parse(existing) : {};
-      cache[barcode] = { name, category, image };
-      await AsyncStorage.setItem('barcodeCache', JSON.stringify(cache));
-    } catch (e) {
-      console.log('Failed to save to cache');
-    }
-  };
-
-  const checkLocalCache = async (barcode) => {
-    try {
-      const existing = await AsyncStorage.getItem('barcodeCache');
-      if (!existing) return null;
-      const cache = JSON.parse(existing);
-      return cache[barcode] || null;
-    } catch (e) {
-      return null;
-    }
-  };
-
-  const handleBarcode = ({ data }) => {
-    if (scanned.current) return;
-    if (!cameraReady.current) return;
-    scanned.current = true;
-    setScanning(false);
-    setScanStatus('Looking up product...');
-    setActiveTab('scan');
-    lookupProduct(data);
-  };
-
-  const detectCategory = (tags) => {
-    if (!tags) return 'other';
-    const tagString = Array.isArray(tags) ? tags.join(' ').toLowerCase() : tags.toLowerCase();
-    if (tagString.includes('hygiene') || tagString.includes('beauty') ||
-      tagString.includes('personal-care') || tagString.includes('hair-care') ||
-      tagString.includes('oral-care') || tagString.includes('skin-care') ||
-      tagString.includes('body-care') || tagString.includes('cosmetic') ||
-      tagString.includes('deodorant') || tagString.includes('shampoo') ||
-      tagString.includes('conditioner') || tagString.includes('toothpaste') ||
-      tagString.includes('mouthwash') || tagString.includes('chapstick') ||
-      tagString.includes('lip-balm')) return 'hygiene';
-    if (tagString.includes('clean') || tagString.includes('household') ||
-      tagString.includes('detergent') || tagString.includes('laundry') ||
-      tagString.includes('dishwash')) return 'cleaning';
-    if (tagString.includes('food') || tagString.includes('beverage') ||
-      tagString.includes('dairy') || tagString.includes('snack') ||
-      tagString.includes('drink') || tagString.includes('grocery')) return 'food';
-    return 'other';
-  };
-
-  const detectCategoryFromString = (category) => {
-    if (!category) return 'other';
-    const cat = category.toLowerCase();
-    if (cat.includes('health') || cat.includes('beauty') || cat.includes('personal') ||
-      cat.includes('hair') || cat.includes('skin') || cat.includes('oral') ||
-      cat.includes('hygiene') || cat.includes('cosmetic')) return 'hygiene';
-    if (cat.includes('clean') || cat.includes('household') || cat.includes('laundry') ||
-      cat.includes('paper') || cat.includes('towel') || cat.includes('detergent')) return 'cleaning';
-    if (cat.includes('food') || cat.includes('grocery') || cat.includes('beverage') ||
-      cat.includes('snack') || cat.includes('drink')) return 'food';
-    return 'other';
-  };
-
-  const lookupProduct = async (barcode) => {
-    setCurrentBarcode(barcode);
-    const cached = await checkLocalCache(barcode);
-    if (cached) {
-      const existing = inventory.find(item => item.barcode === barcode);
-      if (existing) {
-        await changeQuantity(existing.id, 1);
-        setScanStatus(`✓ Updated: ${cached.name} is now x${parseInt(existing.quantity) + 1}`);
-        setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
-      } else {
-        setProductName(cached.name);
-        setProductImage(cached.image);
-        setSelectedCategory(cached.category);
-        setScanStatus('');
-        setActiveTab('add');
-      }
-      return;
-    }
-
-    fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}?fields=product_name,image_url,categories_tags`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.status === 1 && data.product.product_name) {
-          const name = data.product.product_name;
-          const image = data.product.image_url || null;
-          const category = detectCategory(data.product.categories_tags);
-          const existing = inventory.find(item => item.barcode === barcode);
-          if (existing) {
-            changeQuantity(existing.id, 1);
-            setScanStatus(`✓ Updated: ${name} is now x${parseInt(existing.quantity) + 1}`);
-            setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
-          } else {
-            setProductName(name);
-            setProductImage(image);
-            setSelectedCategory(category);
-            setScanStatus('');
-            setActiveTab('add');
-          }
-        } else {
-          lookupProductFallback(barcode);
-        }
-      })
-      .catch(() => lookupProductFallback(barcode));
-  };
-
-  const lookupProductFallback = (barcode) => {
-    fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${barcode}`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.items && data.items.length > 0) {
-          const product = data.items[0];
-          const name = product.title || 'Unknown Product';
-          const image = product.images && product.images.length > 0 ? product.images[0] : null;
-          const category = detectCategoryFromString(product.category);
-          const existing = inventory.find(item => item.barcode === barcode);
-          if (existing) {
-            changeQuantity(existing.id, 1);
-            setScanStatus(`✓ Updated: ${name} is now x${parseInt(existing.quantity) + 1}`);
-            setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
-          } else {
-            setProductName(name);
-            setProductImage(image);
-            setSelectedCategory(category);
-            setScanStatus('');
-            setActiveTab('add');
-          }
-        } else {
-          setProductName('');
-          setProductImage(null);
-          setSelectedCategory('other');
-          setScanStatus('');
-          setActiveTab('add');
-        }
-      })
-      .catch(() => {
-        setProductName('');
-        setProductImage(null);
-        setSelectedCategory('other');
-        setScanStatus('');
-        setActiveTab('add');
-      });
-  };
-
-  const pickImage = async () => {
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.5,
-    });
-    if (!result.canceled) setProductImage(result.assets[0].uri);
-  };
-
-  const takePhoto = async () => {
-    let result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.5,
-    });
-    if (!result.canceled) setProductImage(result.assets[0].uri);
-  };
-
+  // Adds a new item to Supabase and updates local state
   const addItem = async () => {
     if (productName.trim() === '') {
       Alert.alert('Please enter a product name.');
@@ -406,6 +288,7 @@ export default function App() {
     }
   };
 
+  // Deletes an item from Supabase and removes it from local state
   const deleteItem = async (id) => {
     try {
       const { error } = await supabase.from('inventory').delete().eq('id', id);
@@ -416,6 +299,7 @@ export default function App() {
     }
   };
 
+  // Updates an item's quantity by delta (+1 or -1), triggers low stock alert if needed
   const changeQuantity = async (id, delta) => {
     const item = inventory.find(i => i.id === id);
     if (!item) return;
@@ -432,13 +316,206 @@ export default function App() {
     }
   };
 
+  // ─── LOCAL BARCODE CACHE ────────────────────────────────────────────────
+  // Stores manually entered products by barcode so future scans auto-fill
+
+  const saveToLocalCache = async (barcode, name, category, image) => {
+    try {
+      const existing = await AsyncStorage.getItem('barcodeCache');
+      const cache = existing ? JSON.parse(existing) : {};
+      cache[barcode] = { name, category, image };
+      await AsyncStorage.setItem('barcodeCache', JSON.stringify(cache));
+    } catch (e) {
+      console.log('Failed to save to cache');
+    }
+  };
+
+  const checkLocalCache = async (barcode) => {
+    try {
+      const existing = await AsyncStorage.getItem('barcodeCache');
+      if (!existing) return null;
+      const cache = JSON.parse(existing);
+      return cache[barcode] || null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // ─── BARCODE SCANNING ───────────────────────────────────────────────────
+
+  // Fires when the camera detects a barcode
+  // Uses cameraReady ref to prevent false positives right after opening
+  const handleBarcode = ({ data }) => {
+    if (scanned.current) return;
+    if (!cameraReady.current) return;
+    scanned.current = true;
+    setScanning(false);
+    setScanStatus('Looking up product...');
+    setActiveTab('scan');
+    lookupProduct(data);
+  };
+
+  // Looks up a barcode: checks local cache first, then Open Food Facts, then UPC Item DB
+  const lookupProduct = async (barcode) => {
+    setCurrentBarcode(barcode);
+
+    // 1. Check local cache first
+    const cached = await checkLocalCache(barcode);
+    if (cached) {
+      const existing = inventory.find(item => item.barcode === barcode);
+      if (existing) {
+        await changeQuantity(existing.id, 1);
+        setScanStatus(`✓ Updated: ${cached.name} is now x${parseInt(existing.quantity) + 1}`);
+        setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
+      } else {
+        setProductName(cached.name);
+        setProductImage(cached.image);
+        setSelectedCategory(cached.category);
+        setScanStatus('');
+        setActiveTab('add');
+      }
+      return;
+    }
+
+    // 2. Try Open Food Facts API
+    fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}?fields=product_name,image_url,categories_tags`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 1 && data.product.product_name) {
+          const name = data.product.product_name;
+          const image = data.product.image_url || null;
+          const category = detectCategory(data.product.categories_tags);
+          const existing = inventory.find(item => item.barcode === barcode);
+          if (existing) {
+            changeQuantity(existing.id, 1);
+            setScanStatus(`✓ Updated: ${name} is now x${parseInt(existing.quantity) + 1}`);
+            setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
+          } else {
+            setProductName(name);
+            setProductImage(image);
+            setSelectedCategory(category);
+            setScanStatus('');
+            setActiveTab('add');
+          }
+        } else {
+          lookupProductFallback(barcode); // Fall through to UPC Item DB
+        }
+      })
+      .catch(() => lookupProductFallback(barcode));
+  };
+
+  // 3. Fallback to UPC Item DB if Open Food Facts doesn't have the product
+  const lookupProductFallback = (barcode) => {
+    fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${barcode}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.items && data.items.length > 0) {
+          const product = data.items[0];
+          const name = product.title || 'Unknown Product';
+          const image = product.images && product.images.length > 0 ? product.images[0] : null;
+          const category = detectCategoryFromString(product.category);
+          const existing = inventory.find(item => item.barcode === barcode);
+          if (existing) {
+            changeQuantity(existing.id, 1);
+            setScanStatus(`✓ Updated: ${name} is now x${parseInt(existing.quantity) + 1}`);
+            setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
+          } else {
+            setProductName(name);
+            setProductImage(image);
+            setSelectedCategory(category);
+            setScanStatus('');
+            setActiveTab('add');
+          }
+        } else {
+          // Product not found in any database — open empty add form
+          setProductName('');
+          setProductImage(null);
+          setSelectedCategory('other');
+          setScanStatus('');
+          setActiveTab('add');
+        }
+      })
+      .catch(() => {
+        setProductName('');
+        setProductImage(null);
+        setSelectedCategory('other');
+        setScanStatus('');
+        setActiveTab('add');
+      });
+  };
+
+  // ─── CATEGORY DETECTION ─────────────────────────────────────────────────
+
+  // Maps Open Food Facts category tags (array) to our 4 categories
+  const detectCategory = (tags) => {
+    if (!tags) return 'other';
+    const tagString = Array.isArray(tags) ? tags.join(' ').toLowerCase() : tags.toLowerCase();
+    if (tagString.includes('hygiene') || tagString.includes('beauty') ||
+      tagString.includes('personal-care') || tagString.includes('hair-care') ||
+      tagString.includes('oral-care') || tagString.includes('skin-care') ||
+      tagString.includes('body-care') || tagString.includes('cosmetic') ||
+      tagString.includes('deodorant') || tagString.includes('shampoo') ||
+      tagString.includes('conditioner') || tagString.includes('toothpaste') ||
+      tagString.includes('mouthwash') || tagString.includes('chapstick') ||
+      tagString.includes('lip-balm')) return 'hygiene';
+    if (tagString.includes('clean') || tagString.includes('household') ||
+      tagString.includes('detergent') || tagString.includes('laundry') ||
+      tagString.includes('dishwash')) return 'cleaning';
+    if (tagString.includes('food') || tagString.includes('beverage') ||
+      tagString.includes('dairy') || tagString.includes('snack') ||
+      tagString.includes('drink') || tagString.includes('grocery')) return 'food';
+    return 'other';
+  };
+
+  // Maps UPC Item DB category string to our 4 categories
+  const detectCategoryFromString = (category) => {
+    if (!category) return 'other';
+    const cat = category.toLowerCase();
+    if (cat.includes('health') || cat.includes('beauty') || cat.includes('personal') ||
+      cat.includes('hair') || cat.includes('skin') || cat.includes('oral') ||
+      cat.includes('hygiene') || cat.includes('cosmetic')) return 'hygiene';
+    if (cat.includes('clean') || cat.includes('household') || cat.includes('laundry') ||
+      cat.includes('paper') || cat.includes('towel') || cat.includes('detergent')) return 'cleaning';
+    if (cat.includes('food') || cat.includes('grocery') || cat.includes('beverage') ||
+      cat.includes('snack') || cat.includes('drink')) return 'food';
+    return 'other';
+  };
+
+  // ─── IMAGE PICKER FUNCTIONS ─────────────────────────────────────────────
+
+  // Opens the camera roll to pick a photo
+  const pickImage = async () => {
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.5,
+    });
+    if (!result.canceled) setProductImage(result.assets[0].uri);
+  };
+
+  // Opens the camera to take a new photo
+  const takePhoto = async () => {
+    let result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.5,
+    });
+    if (!result.canceled) setProductImage(result.assets[0].uri);
+  };
+
+  // ─── HELPER FUNCTIONS ───────────────────────────────────────────────────
+
+  // Returns the color for a given category value
   const getCategoryColor = (value) => {
     const cat = CATEGORIES.find(c => c.value === value);
     return cat ? cat.color : '#7f8c8d';
   };
 
+  // Returns true if quantity is at or below the low stock threshold
   const isLowStock = (qty) => parseInt(qty) <= LOW_STOCK_THRESHOLD;
 
+  // Filters inventory by search query and category, then sorts by selected option
   const getFilteredAndSorted = () => {
     let result = [...inventory];
     if (searchQuery.trim() !== '') {
@@ -459,8 +536,12 @@ export default function App() {
     return result;
   };
 
+  // Items with quantity 0 automatically appear in the shopping list
   const shoppingList = inventory.filter(item => parseInt(item.quantity) === 0);
 
+  // ─── CONDITIONAL SCREENS ────────────────────────────────────────────────
+
+  // Show spinner while checking if user is logged in
   if (checkingAuth) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f4f4f4' }}>
@@ -469,9 +550,13 @@ export default function App() {
     );
   }
 
+  // Show login/signup screen if not authenticated
   if (!user) return <AuthScreen />;
+
+  // Show household setup screen if user has no household yet
   if (!householdId) return <HouseholdScreen user={user} onHouseholdJoined={setHouseholdId} />;
 
+  // Show full screen camera when scan tab is active
   if (activeTab === 'scan' && scanning) {
     return (
       <View style={{ flex: 1 }}>
@@ -481,6 +566,7 @@ export default function App() {
           onBarcodeScanned={handleBarcode}
           barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128'] }}
           onCameraReady={() => {
+            // Wait 1.5s before accepting barcodes to avoid false positives
             setTimeout(() => { cameraReady.current = true; }, 1500);
           }}
         />
@@ -503,6 +589,7 @@ export default function App() {
     );
   }
 
+  // Show spinner while looking up product after scan
   if (activeTab === 'scan' && scanStatus) {
     return (
       <View style={styles.lookupScreen}>
@@ -512,18 +599,24 @@ export default function App() {
     );
   }
 
+  // ─── MAIN APP UI ────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
 
+      {/* ── INVENTORY TAB ────────────────────────────────────────────────── */}
       {activeTab === 'inventory' && (
         <View style={styles.screen}>
           <Text style={styles.title}>Home Inventory</Text>
+
+          {/* Search Bar */}
           <TextInput
             style={styles.searchBar}
             placeholder="🔍 Search inventory..."
             value={searchQuery}
             onChangeText={setSearchQuery}
           />
+
+          {/* Category Filter Tabs + Sort Button */}
           <View style={styles.filterSortRow}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
               <TouchableOpacity
@@ -548,6 +641,8 @@ export default function App() {
               <Text style={styles.sortBtnText}>⇅ Sort</Text>
             </TouchableOpacity>
           </View>
+
+          {/* Sort Dropdown */}
           {showSortOptions && (
             <View style={styles.sortDropdown}>
               {[
@@ -567,6 +662,8 @@ export default function App() {
               ))}
             </View>
           )}
+
+          {/* Inventory List */}
           {loading ? (
             <View style={styles.emptyState}>
               <ActivityIndicator size="large" color="#2c3e50" />
@@ -587,11 +684,13 @@ export default function App() {
               keyExtractor={item => item.id}
               renderItem={({ item }) => (
                 <View style={[styles.item, isLowStock(item.quantity) && styles.itemLowStock]}>
+                  {/* Product Image or Placeholder */}
                   {item.image ? (
                     <Image source={{ uri: item.image }} style={styles.itemImage} />
                   ) : (
                     <View style={styles.itemImagePlaceholder} />
                   )}
+                  {/* Product Name + Tags */}
                   <View style={styles.itemInfo}>
                     <Text style={styles.itemName}>{item.name}</Text>
                     <View style={styles.itemTagRow}>
@@ -609,6 +708,7 @@ export default function App() {
                       )}
                     </View>
                   </View>
+                  {/* Quantity Controls */}
                   <View style={styles.qtyControls}>
                     <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, -1)}>
                       <Text style={styles.qtyBtnText}>−</Text>
@@ -620,6 +720,7 @@ export default function App() {
                       <Text style={styles.qtyBtnText}>+</Text>
                     </TouchableOpacity>
                   </View>
+                  {/* Delete Button */}
                   <TouchableOpacity onPress={() => deleteItem(item.id)}>
                     <Text style={styles.deleteBtn}>✕</Text>
                   </TouchableOpacity>
@@ -630,9 +731,12 @@ export default function App() {
         </View>
       )}
 
+      {/* ── ADD ITEM TAB ─────────────────────────────────────────────────── */}
       {activeTab === 'add' && (
         <ScrollView style={styles.screen} contentContainerStyle={styles.addContent}>
           <Text style={styles.title}>Add Item</Text>
+
+          {/* Image Preview + Photo Buttons */}
           <View style={styles.addImageRow}>
             {productImage ? (
               <Image source={{ uri: productImage }} style={styles.addPreviewImage} />
@@ -650,6 +754,8 @@ export default function App() {
               </TouchableOpacity>
             </View>
           </View>
+
+          {/* Product Name Input */}
           <Text style={styles.formLabel}>Product Name</Text>
           <TextInput
             style={styles.formInput}
@@ -657,6 +763,8 @@ export default function App() {
             value={productName}
             onChangeText={setProductName}
           />
+
+          {/* Quantity Input */}
           <Text style={styles.formLabel}>Quantity</Text>
           <TextInput
             style={[styles.formInput, { width: 80 }]}
@@ -665,6 +773,8 @@ export default function App() {
             onChangeText={setQuantity}
             keyboardType="numeric"
           />
+
+          {/* Category Selector */}
           <Text style={styles.formLabel}>Category</Text>
           <View style={styles.categoryRow}>
             {CATEGORIES.map(cat => (
@@ -679,9 +789,13 @@ export default function App() {
               </TouchableOpacity>
             ))}
           </View>
+
+          {/* Submit Button */}
           <TouchableOpacity style={styles.confirmBtn} onPress={addItem}>
             <Text style={styles.confirmBtnText}>Add to Inventory</Text>
           </TouchableOpacity>
+
+          {/* Cancel Button */}
           <TouchableOpacity style={styles.cancelFormBtn} onPress={() => {
             setProductName('');
             setQuantity('1');
@@ -695,6 +809,7 @@ export default function App() {
         </ScrollView>
       )}
 
+      {/* ── SHOPPING LIST TAB ────────────────────────────────────────────── */}
       {activeTab === 'shopping' && (
         <View style={styles.screen}>
           <Text style={styles.title}>Shopping List</Text>
@@ -722,6 +837,7 @@ export default function App() {
                       </Text>
                     </View>
                   </View>
+                  {/* Restock button adds 1 to quantity and removes from shopping list */}
                   <TouchableOpacity style={styles.restockBtn} onPress={() => changeQuantity(item.id, 1)}>
                     <Text style={styles.restockBtnText}>+ Restock</Text>
                   </TouchableOpacity>
@@ -732,13 +848,16 @@ export default function App() {
         </View>
       )}
 
+      {/* ── PROFILE TAB ──────────────────────────────────────────────────── */}
       {activeTab === 'profile' && (
         <ScrollView style={styles.screen}>
           <Text style={styles.title}>Profile</Text>
 
+          {/* User Info Card */}
           <View style={styles.profileCard}>
             <Ionicons name="person-circle-outline" size={60} color="#2c3e50" />
             <Text style={styles.profileEmail}>{user.email}</Text>
+            {/* Name Edit Toggle */}
             {editingName ? (
               <View style={styles.editNameRow}>
                 <TextInput
@@ -761,6 +880,7 @@ export default function App() {
             )}
           </View>
 
+          {/* Household Join Code */}
           <Text style={styles.sectionHeader}>Your Household</Text>
           <View style={styles.profileCard}>
             <View style={styles.codeRow}>
@@ -772,6 +892,7 @@ export default function App() {
             <Text style={styles.codeHint}>Share this code with household members</Text>
           </View>
 
+          {/* Household Members List */}
           <Text style={styles.sectionHeader}>Members ({householdMembers.length})</Text>
           <View style={styles.profileCard}>
             {householdMembers.map((member, index) => (
@@ -792,6 +913,7 @@ export default function App() {
             ))}
           </View>
 
+          {/* Logout Button */}
           <TouchableOpacity
             style={styles.logoutBtn}
             onPress={() => {
@@ -822,19 +944,17 @@ export default function App() {
         </ScrollView>
       )}
 
+      {/* ── BOTTOM TAB BAR ───────────────────────────────────────────────── */}
+      {/* Order: Inventory | Add | SCAN (center, elevated) | Shopping | Profile */}
       <View style={styles.tabBar}>
+
+        {/* Inventory Tab */}
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('inventory')}>
           <Ionicons name={activeTab === 'inventory' ? 'grid' : 'grid-outline'} size={24} color={activeTab === 'inventory' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'inventory' && styles.tabLabelActive]}>Inventory</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('scan')}>
-          <View style={styles.scanTabBtn}>
-            <Ionicons name="barcode-outline" size={28} color="white" />
-          </View>
-          <Text style={[styles.tabLabel, activeTab === 'scan' && styles.tabLabelActive]}>Scan</Text>
-        </TouchableOpacity>
-
+        {/* Add Tab */}
         <TouchableOpacity style={styles.tabItem} onPress={() => {
           setProductName('');
           setQuantity('1');
@@ -847,6 +967,15 @@ export default function App() {
           <Text style={[styles.tabLabel, activeTab === 'add' && styles.tabLabelActive]}>Add</Text>
         </TouchableOpacity>
 
+        {/* Scan Tab — center, elevated green circle */}
+        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('scan')}>
+          <View style={styles.scanTabBtn}>
+            <Ionicons name="barcode-outline" size={28} color="white" />
+          </View>
+          <Text style={[styles.tabLabel, activeTab === 'scan' && styles.tabLabelActive]}>Scan</Text>
+        </TouchableOpacity>
+
+        {/* Shopping Tab — shows badge when items are out of stock */}
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('shopping')}>
           <View>
             <Ionicons name={activeTab === 'shopping' ? 'cart' : 'cart-outline'} size={24} color={activeTab === 'shopping' ? '#27ae60' : '#999'} />
@@ -859,20 +988,26 @@ export default function App() {
           <Text style={[styles.tabLabel, activeTab === 'shopping' && styles.tabLabelActive]}>Shopping</Text>
         </TouchableOpacity>
 
+        {/* Profile Tab */}
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('profile')}>
           <Ionicons name={activeTab === 'profile' ? 'person' : 'person-outline'} size={24} color={activeTab === 'profile' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'profile' && styles.tabLabelActive]}>Profile</Text>
         </TouchableOpacity>
+
       </View>
 
     </View>
   );
 }
 
+// ─── STYLES ─────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
+  // Layout
   container: { flex: 1, backgroundColor: '#f4f4f4' },
   screen: { flex: 1, paddingTop: 60, paddingHorizontal: 20 },
   title: { fontSize: 26, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center', marginBottom: 16 },
+
+  // Inventory Screen
   searchBar: { backgroundColor: 'white', padding: 10, borderRadius: 8, fontSize: 14, marginBottom: 10 },
   filterSortRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   filterScroll: { flex: 1 },
@@ -887,9 +1022,13 @@ const styles = StyleSheet.create({
   sortOptionActive: { backgroundColor: '#2c3e50' },
   sortOptionText: { fontSize: 14, color: '#333' },
   sortOptionTextActive: { color: 'white', fontWeight: 'bold' },
+
+  // Empty State
   emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60 },
   emptyStateIcon: { fontSize: 48, marginBottom: 12 },
   emptyStateText: { fontSize: 16, color: '#999', textAlign: 'center' },
+
+  // Inventory Item Card
   item: { backgroundColor: 'white', padding: 12, borderRadius: 8, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
   itemLowStock: { backgroundColor: '#fff5f5', borderWidth: 1, borderColor: '#e74c3c' },
   itemImage: { width: 50, height: 50, borderRadius: 6 },
@@ -907,6 +1046,8 @@ const styles = StyleSheet.create({
   qtyNumber: { fontSize: 15, fontWeight: 'bold', color: '#2c3e50', minWidth: 20, textAlign: 'center' },
   qtyLow: { color: '#e74c3c' },
   deleteBtn: { color: '#e74c3c', fontSize: 16, fontWeight: 'bold' },
+
+  // Add Item Screen
   addContent: { paddingBottom: 40 },
   addImageRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 16 },
   addPreviewImage: { width: 100, height: 100, borderRadius: 12 },
@@ -924,9 +1065,13 @@ const styles = StyleSheet.create({
   confirmBtnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   cancelFormBtn: { padding: 14, alignItems: 'center', marginTop: 8 },
   cancelFormBtnText: { color: '#999', fontSize: 15 },
+
+  // Shopping List Screen
   shoppingItem: { backgroundColor: 'white', padding: 12, borderRadius: 8, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
   restockBtn: { backgroundColor: '#27ae60', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
   restockBtnText: { color: 'white', fontSize: 13, fontWeight: 'bold' },
+
+  // Camera / Scan Screen
   scanOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   scanTitle: { color: 'white', fontSize: 20, fontWeight: 'bold', marginBottom: 30 },
   scanBox: { width: 260, height: 160, borderWidth: 3, borderColor: '#27ae60', borderRadius: 12, marginBottom: 20 },
@@ -934,15 +1079,21 @@ const styles = StyleSheet.create({
   scanCancelRow: { paddingBottom: 40, alignItems: 'center' },
   scanCancelBtn: { backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 30, paddingVertical: 14, borderRadius: 30 },
   scanCancelText: { color: 'white', fontSize: 16 },
+
+  // Product Lookup Loading Screen
   lookupScreen: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f4f4f4' },
   lookupText: { marginTop: 16, fontSize: 16, color: '#2c3e50' },
+
+  // Bottom Tab Bar
   tabBar: { flexDirection: 'row', backgroundColor: 'white', borderTopWidth: 1, borderTopColor: '#e0e0e0', paddingBottom: 24, paddingTop: 10 },
   tabItem: { flex: 1, alignItems: 'center', position: 'relative' },
   tabLabel: { fontSize: 11, color: '#999' },
   tabLabelActive: { color: '#27ae60', fontWeight: 'bold' },
   scanTabBtn: { width: 52, height: 52, borderRadius: 26, backgroundColor: '#27ae60', justifyContent: 'center', alignItems: 'center', marginTop: -20, shadowColor: '#27ae60', shadowOpacity: 0.4, shadowRadius: 8, elevation: 6 },
-  badge: { position: 'absolute', top: 0, right: 10, backgroundColor: '#e74c3c', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center' },
+  badge: { position: 'absolute', top: 0, right: -6, backgroundColor: '#e74c3c', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center' },
   badgeText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
+
+  // Profile Screen
   profileCard: { backgroundColor: 'white', borderRadius: 12, padding: 20, marginBottom: 16 },
   profileEmail: { fontSize: 16, color: '#2c3e50', fontWeight: 'bold', marginTop: 12 },
   sectionHeader: { fontSize: 13, fontWeight: 'bold', color: '#999', marginBottom: 8, marginLeft: 4, textTransform: 'uppercase', letterSpacing: 1 },
