@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "HomeInventory",
+    "name": "Home Inventory",
     "slug": "HomeInventory",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -35,6 +35,12 @@
         "projectId": "08ee532e-07ce-4c3f-aea1-7ba9c0e86be5"
       }
     },
-    "owner": "murphys611"
+    "owner": "murphys611",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/08ee532e-07ce-4c3f-aea1-7ba9c0e86be5"
+    }
   }
 }
