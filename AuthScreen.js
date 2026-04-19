@@ -56,6 +56,7 @@ export default function AuthScreen() {
           <TextInput
             style={styles.input}
             placeholder="Full Name"
+            placeholderTextColor="#999"
             value={fullName}
             onChangeText={setFullName}
             autoCapitalize="words"
@@ -65,6 +66,7 @@ export default function AuthScreen() {
         <TextInput
           style={styles.input}
           placeholder="Email"
+          placeholderTextColor="#999"
           value={email}
           onChangeText={setEmail}
           autoCapitalize="none"
@@ -73,6 +75,7 @@ export default function AuthScreen() {
         <TextInput
           style={styles.input}
           placeholder="Password"
+          placeholderTextColor="#999"
           value={password}
           onChangeText={setPassword}
           secureTextEntry
@@ -104,7 +107,7 @@ const styles = StyleSheet.create({
   inner: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 30, paddingVertical: 60 },
   title: { fontSize: 32, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center', marginBottom: 8 },
   subtitle: { fontSize: 16, color: '#777', textAlign: 'center', marginBottom: 32 },
-  input: { backgroundColor: 'white', padding: 14, borderRadius: 10, fontSize: 15, marginBottom: 14 },
+  input: { backgroundColor: 'white', padding: 14, borderRadius: 10, fontSize: 15, marginBottom: 14, color: '#333' },
   btn: { backgroundColor: '#27ae60', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 16 },
   btnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   switchText: { color: '#27ae60', textAlign: 'center', fontSize: 14 },

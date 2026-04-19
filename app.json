@@ -25,7 +25,8 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.murphys611.HomeInventory"
+      "package": "com.murphys611.HomeInventory",
+      "allowBackup": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
