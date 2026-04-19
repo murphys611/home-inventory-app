@@ -338,6 +338,7 @@ export default function App() {
       .catch(() => lookupProductFallback(barcode));
   };
 
+  // Fallback to UPC Item DB, then show alert if still not found
   const lookupProductFallback = (barcode) => {
     fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${barcode}`)
       .then(res => res.json())
@@ -360,19 +361,53 @@ export default function App() {
             setActiveTab('add');
           }
         } else {
-          setProductName('');
-          setProductImage(null);
-          setSelectedCategory('other');
+          // Product not found in any database — show alert
           setScanStatus('');
-          setActiveTab('add');
+          Alert.alert(
+            'Product Not Found',
+            'This barcode wasn\'t recognized. You can add it manually — next time you scan this barcode it will be remembered automatically.',
+            [
+              {
+                text: 'Add Manually',
+                onPress: () => {
+                  setProductName('');
+                  setProductImage(null);
+                  setSelectedCategory('other');
+                  setActiveTab('add');
+                }
+              },
+              {
+                text: 'Cancel',
+                style: 'cancel',
+                onPress: () => setActiveTab('inventory')
+              }
+            ]
+          );
         }
       })
       .catch(() => {
-        setProductName('');
-        setProductImage(null);
-        setSelectedCategory('other');
+        // Network error — show alert
         setScanStatus('');
-        setActiveTab('add');
+        Alert.alert(
+          'Lookup Failed',
+          'Could not connect to product database. You can add it manually.',
+          [
+            {
+              text: 'Add Manually',
+              onPress: () => {
+                setProductName('');
+                setProductImage(null);
+                setSelectedCategory('other');
+                setActiveTab('add');
+              }
+            },
+            {
+              text: 'Cancel',
+              style: 'cancel',
+              onPress: () => setActiveTab('inventory')
+            }
+          ]
+        );
       });
   };
 
@@ -518,6 +553,7 @@ export default function App() {
           <TextInput
             style={styles.searchBar}
             placeholder="🔍 Search inventory..."
+            placeholderTextColor="#999"
             value={searchQuery}
             onChangeText={setSearchQuery}
           />
@@ -590,7 +626,7 @@ export default function App() {
                     <View style={styles.itemImagePlaceholder} />
                   )}
                   <View style={styles.itemInfo}>
-                    <Text style={styles.itemName}>{item.name}</Text>
+                    <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
                     <View style={styles.itemTagRow}>
                       <View style={[styles.categoryTag, { backgroundColor: getCategoryColor(item.category) }]}>
                         <Text style={styles.categoryTagText}>
@@ -652,6 +688,7 @@ export default function App() {
           <TextInput
             style={styles.formInput}
             placeholder="e.g. Bounty Paper Towels"
+            placeholderTextColor="#999"
             value={productName}
             onChangeText={setProductName}
           />
@@ -659,6 +696,7 @@ export default function App() {
           <TextInput
             style={[styles.formInput, { width: 80 }]}
             placeholder="1"
+            placeholderTextColor="#999"
             value={quantity}
             onChangeText={setQuantity}
             keyboardType="numeric"
@@ -704,7 +742,6 @@ export default function App() {
             </View>
           ) : (
             <>
-              {/* Done Shopping Button — only shows when items are checked */}
               {Object.values(checkedItems).some(v => v) && (
                 <TouchableOpacity
                   style={styles.doneShoppingBtn}
@@ -728,8 +765,6 @@ export default function App() {
                   </Text>
                 </TouchableOpacity>
               )}
-
-              {/* Items grouped by category */}
               <FlatList
                 data={CATEGORIES.filter(cat =>
                   shoppingList.some(item => item.category === cat.value)
@@ -737,7 +772,6 @@ export default function App() {
                 keyExtractor={cat => cat.value}
                 renderItem={({ item: cat }) => (
                   <View>
-                    {/* Category Header */}
                     <View style={[styles.shoppingCategoryHeader, { borderLeftColor: cat.color }]}>
                       <Text style={[styles.shoppingCategoryLabel, { color: cat.color }]}>
                         {cat.label}
@@ -746,51 +780,31 @@ export default function App() {
                         {shoppingList.filter(i => i.category === cat.value).length} items
                       </Text>
                     </View>
-
-                    {/* Items in this category */}
                     {shoppingList
                       .filter(item => item.category === cat.value)
                       .map(item => (
                         <TouchableOpacity
                           key={item.id}
-                          style={[
-                            styles.shoppingItem,
-                            checkedItems[item.id] && styles.shoppingItemChecked
-                          ]}
-                          onPress={() => setCheckedItems(prev => ({
-                            ...prev,
-                            [item.id]: !prev[item.id]
-                          }))}
+                          style={[styles.shoppingItem, checkedItems[item.id] && styles.shoppingItemChecked]}
+                          onPress={() => setCheckedItems(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
                         >
-                          {/* Checkbox */}
                           <View style={[styles.checkbox, checkedItems[item.id] && styles.checkboxChecked]}>
-                            {checkedItems[item.id] && (
-                              <Ionicons name="checkmark" size={14} color="white" />
-                            )}
+                            {checkedItems[item.id] && <Ionicons name="checkmark" size={14} color="white" />}
                           </View>
-                          {/* Product Image */}
                           {item.image ? (
                             <Image source={{ uri: item.image }} style={styles.itemImage} />
                           ) : (
                             <View style={styles.itemImagePlaceholder} />
                           )}
-                          {/* Product Name */}
-                          <Text style={[
-                            styles.shoppingItemName,
-                            checkedItems[item.id] && styles.shoppingItemNameChecked
-                          ]}>
+                          <Text style={[styles.shoppingItemName, checkedItems[item.id] && styles.shoppingItemNameChecked]} numberOfLines={2}>
                             {item.name}
                           </Text>
-                          {/* Quantity Input */}
                           <View style={styles.restockQtyRow}>
                             <Text style={styles.restockQtyLabel}>Qty</Text>
                             <TextInput
                               style={styles.restockQtyInput}
                               value={restockQuantities[item.id] || '1'}
-                              onChangeText={(val) => setRestockQuantities(prev => ({
-                                ...prev,
-                                [item.id]: val
-                              }))}
+                              onChangeText={(val) => setRestockQuantities(prev => ({ ...prev, [item.id]: val }))}
                               keyboardType="numeric"
                             />
                           </View>
@@ -818,6 +832,7 @@ export default function App() {
                   value={newName}
                   onChangeText={setNewName}
                   placeholder="Enter your name"
+                  placeholderTextColor="#999"
                   autoFocus
                 />
                 <TouchableOpacity style={styles.saveNameBtn} onPress={saveName}>
@@ -897,7 +912,6 @@ export default function App() {
           <Ionicons name={activeTab === 'inventory' ? 'grid' : 'grid-outline'} size={24} color={activeTab === 'inventory' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'inventory' && styles.tabLabelActive]}>Inventory</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.tabItem} onPress={() => {
           setProductName('');
           setQuantity('1');
@@ -909,14 +923,12 @@ export default function App() {
           <Ionicons name={activeTab === 'add' ? 'add-circle' : 'add-circle-outline'} size={24} color={activeTab === 'add' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'add' && styles.tabLabelActive]}>Add</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('scan')}>
           <View style={styles.scanTabBtn}>
             <Ionicons name="barcode-outline" size={28} color="white" />
           </View>
           <Text style={[styles.tabLabel, activeTab === 'scan' && styles.tabLabelActive]}>Scan</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('shopping')}>
           <View>
             <Ionicons name={activeTab === 'shopping' ? 'cart' : 'cart-outline'} size={24} color={activeTab === 'shopping' ? '#27ae60' : '#999'} />
@@ -928,7 +940,6 @@ export default function App() {
           </View>
           <Text style={[styles.tabLabel, activeTab === 'shopping' && styles.tabLabelActive]}>Shopping</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('profile')}>
           <Ionicons name={activeTab === 'profile' ? 'person' : 'person-outline'} size={24} color={activeTab === 'profile' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'profile' && styles.tabLabelActive]}>Profile</Text>
@@ -943,7 +954,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f4f4' },
   screen: { flex: 1, paddingTop: 60, paddingHorizontal: 20 },
   title: { fontSize: 26, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center', marginBottom: 16 },
-  searchBar: { backgroundColor: 'white', padding: 10, borderRadius: 8, fontSize: 14, marginBottom: 10 },
+  searchBar: { backgroundColor: 'white', padding: 10, borderRadius: 8, fontSize: 14, marginBottom: 10, color: '#333' },
   filterSortRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   filterScroll: { flex: 1 },
   filterTab: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, backgroundColor: '#ddd', marginRight: 8 },
@@ -965,7 +976,7 @@ const styles = StyleSheet.create({
   itemImage: { width: 50, height: 50, borderRadius: 6 },
   itemImagePlaceholder: { width: 50, height: 50, borderRadius: 6, backgroundColor: '#ddd' },
   itemInfo: { flex: 1 },
-  itemName: { fontSize: 14, color: '#2c3e50', marginBottom: 4 },
+  itemName: { fontSize: 13, color: '#2c3e50', marginBottom: 4 },
   itemTagRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
   categoryTag: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
   categoryTagText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
@@ -986,7 +997,7 @@ const styles = StyleSheet.create({
   imgBtn: { backgroundColor: '#2c3e50', padding: 10, borderRadius: 8, alignItems: 'center' },
   imgBtnText: { color: 'white', fontSize: 13 },
   formLabel: { fontSize: 14, fontWeight: 'bold', color: '#2c3e50', marginBottom: 6, marginTop: 12 },
-  formInput: { backgroundColor: 'white', padding: 12, borderRadius: 8, fontSize: 15 },
+  formInput: { backgroundColor: 'white', padding: 12, borderRadius: 8, fontSize: 15, color: '#333' },
   categoryRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
   categoryBtn: { flex: 1, padding: 10, borderRadius: 8, alignItems: 'center' },
   categoryBtnText: { fontSize: 12, fontWeight: 'bold' },
@@ -1001,16 +1012,13 @@ const styles = StyleSheet.create({
   shoppingCategoryCount: { fontSize: 12, color: '#999' },
   shoppingItem: { backgroundColor: 'white', padding: 12, borderRadius: 8, marginBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   shoppingItemChecked: { backgroundColor: '#f0f9f4', borderWidth: 1, borderColor: '#27ae60', opacity: 0.7 },
-  shoppingItemName: { flex: 1, fontSize: 14, color: '#2c3e50' },
+  shoppingItemName: { flex: 1, fontSize: 13, color: '#2c3e50' },
   shoppingItemNameChecked: { textDecorationLine: 'line-through', color: '#999' },
   checkbox: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: '#ddd', justifyContent: 'center', alignItems: 'center' },
   checkboxChecked: { backgroundColor: '#27ae60', borderColor: '#27ae60' },
   restockQtyRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   restockQtyLabel: { fontSize: 12, color: '#999' },
   restockQtyInput: { backgroundColor: '#f4f4f4', width: 40, padding: 6, borderRadius: 6, fontSize: 13, textAlign: 'center' },
-  shoppingItem: { backgroundColor: 'white', padding: 12, borderRadius: 8, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  restockBtn: { backgroundColor: '#27ae60', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
-  restockBtnText: { color: 'white', fontSize: 13, fontWeight: 'bold' },
   scanOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   scanTitle: { color: 'white', fontSize: 20, fontWeight: 'bold', marginBottom: 30 },
   scanBox: { width: 260, height: 160, borderWidth: 3, borderColor: '#27ae60', borderRadius: 12, marginBottom: 20 },
@@ -1045,7 +1053,7 @@ const styles = StyleSheet.create({
   logoutBtn: { backgroundColor: '#e74c3c', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 16 },
   logoutBtnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   editNameRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 8 },
-  editNameInput: { flex: 1, backgroundColor: '#f4f4f4', padding: 10, borderRadius: 8, fontSize: 15 },
+  editNameInput: { flex: 1, backgroundColor: '#f4f4f4', padding: 10, borderRadius: 8, fontSize: 15, color: '#333' },
   saveNameBtn: { backgroundColor: '#27ae60', padding: 10, borderRadius: 8 },
   saveNameBtnText: { color: 'white', fontWeight: 'bold' },
   editNameLink: { color: '#27ae60', fontSize: 15, marginTop: 8, fontWeight: 'bold' },
