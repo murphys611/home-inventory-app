@@ -17,13 +17,51 @@ import ResetPasswordScreen from './ResetPasswordScreen';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
-const CATEGORIES = [
+// Top-level categories — used for inventory filter tabs and shopping list grouping
+const MAIN_CATEGORIES = [
   { label: 'Food', value: 'food', color: '#e67e22' },
   { label: 'Drinks', value: 'drinks', color: '#16a085' },
   { label: 'Cleaning', value: 'cleaning', color: '#2980b9' },
   { label: 'Hygiene', value: 'hygiene', color: '#8e44ad' },
   { label: 'Other', value: 'other', color: '#7f8c8d' },
 ];
+
+// Food subcategories — shown when Food is selected in the form
+const FOOD_SUBCATEGORIES = [
+  { label: 'Produce', value: 'produce', color: '#27ae60' },
+  { label: 'Dairy', value: 'dairy', color: '#f39c12' },
+  { label: 'Meat', value: 'meat', color: '#e74c3c' },
+  { label: 'Snacks', value: 'snacks', color: '#e67e22' },
+  { label: 'Frozen', value: 'frozen', color: '#3498db' },
+  { label: 'Bakery', value: 'bakery', color: '#d35400' },
+  { label: 'Canned', value: 'canned', color: '#7f8c8d' },
+  { label: 'Condiments', value: 'condiments', color: '#8e44ad' },
+];
+
+// Drinks subcategories — shown when Drinks is selected in the form
+const DRINKS_SUBCATEGORIES = [
+  { label: 'Water', value: 'water', color: '#3498db' },
+  { label: 'Juice', value: 'juice', color: '#e67e22' },
+  { label: 'Soda', value: 'soda', color: '#e74c3c' },
+  { label: 'Coffee/Tea', value: 'coffee_tea', color: '#795548' },
+  { label: 'Alcohol', value: 'alcohol', color: '#8e44ad' },
+];
+
+// Flat list of all categories for color/label lookup
+const ALL_CATEGORIES = [
+  ...MAIN_CATEGORIES,
+  ...FOOD_SUBCATEGORIES,
+  ...DRINKS_SUBCATEGORIES,
+];
+
+// Maps any category value to its parent — used for filtering and grouping
+const CATEGORY_PARENT_MAP = {
+  food: 'food', produce: 'food', dairy: 'food', meat: 'food',
+  snacks: 'food', frozen: 'food', bakery: 'food', canned: 'food', condiments: 'food',
+  drinks: 'drinks', water: 'drinks', juice: 'drinks', soda: 'drinks',
+  coffee_tea: 'drinks', alcohol: 'drinks',
+  cleaning: 'cleaning', hygiene: 'hygiene', other: 'other',
+};
 
 const LOW_STOCK_THRESHOLD = 2;
 
@@ -73,7 +111,7 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState('food');
   const [scanStatus, setScanStatus] = useState('');
   const [expirationDate, setExpirationDate] = useState('');
-  const [lowStockThreshold, setLowStockThreshold] = useState('2'); // Per-item alert threshold
+  const [lowStockThreshold, setLowStockThreshold] = useState('2');
 
   // ── Shopping List State ─────────────────────────────────────────────────
   const [checkedItems, setCheckedItems] = useState({});
@@ -85,23 +123,20 @@ export default function App() {
   const [profileName, setProfileName] = useState('');
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState('');
+  const [profileAvatar, setProfileAvatar] = useState(null);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [enlargedAvatar, setEnlargedAvatar] = useState(null); // URL of avatar being viewed full size
 
   // ── Item Detail + Edit State ────────────────────────────────────────────
-  // selectedItem: opens the detail/image modal by tapping anywhere on a card
-  // editingItem: opens the edit form (triggered from inside the detail modal)
   const [selectedItem, setSelectedItem] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [editName, setEditName] = useState('');
   const [editCategory, setEditCategory] = useState('');
   const [editThreshold, setEditThreshold] = useState('');
-  
+
   // ── Refs ────────────────────────────────────────────────────────────────
   const scanned = useRef(false);
   const cameraReady = useRef(false);
-
-  //Avatar State
-  const [profileAvatar, setProfileAvatar] = useState(null); // Current user's avatar URL
-  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   // ─── DEEP LINK HANDLER ─────────────────────────────────────────────────
   useEffect(() => {
@@ -152,42 +187,29 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ─── LOAD HOUSEHOLD WHEN USER LOGS IN ──────────────────────────────────
-  useEffect(() => {
-    if (user) loadHousehold();
-  }, [user]);
+  useEffect(() => { if (user) loadHousehold(); }, [user]);
 
-  // ─── LOAD INVENTORY + SUBSCRIBE TO CHANGES ─────────────────────────────
   useEffect(() => {
     if (householdId) {
       loadInventory();
       requestNotificationPermission();
       const channel = supabase
         .channel('inventory-changes')
-        .on('postgres_changes',
-          { event: '*', schema: 'public', table: 'inventory' },
-          () => { loadInventory(); }
-        )
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => { loadInventory(); })
         .subscribe();
       return () => supabase.removeChannel(channel);
     }
   }, [householdId]);
 
-  // ─── AUTO OPEN CAMERA ──────────────────────────────────────────────────
   useEffect(() => {
     if (activeTab === 'scan') {
       if (!permission?.granted) {
-        requestPermission().then(() => {
-          scanned.current = false;
-          setScanning(true);
-        });
+        requestPermission().then(() => { scanned.current = false; setScanning(true); });
       } else {
-        scanned.current = false;
-        setScanning(true);
+        scanned.current = false; setScanning(true);
       }
     } else {
-      setScanning(false);
-      cameraReady.current = false;
+      setScanning(false); cameraReady.current = false;
     }
   }, [activeTab]);
 
@@ -195,27 +217,16 @@ export default function App() {
 
   const loadHousehold = async () => {
     try {
-      const { data } = await supabase
-        .from('household_members')
-        .select('household_id')
-        .eq('user_id', user.id)
-        .single();
+      const { data } = await supabase.from('household_members').select('household_id').eq('user_id', user.id).single();
       if (data) {
         setHouseholdId(data.household_id);
-        const { data: household } = await supabase
-          .from('households').select('code').eq('id', data.household_id).single();
+        const { data: household } = await supabase.from('households').select('code').eq('id', data.household_id).single();
         if (household) setHouseholdCode(household.code);
-        const { data: myProfile } = await supabase
-          .from('profiles').select('full_name, avatar_url').eq('id', user.id).single();
-        if (myProfile) {
-          setProfileName(myProfile.full_name || '');
-          setProfileAvatar(myProfile.avatar_url || null);
-        }
-        const { data: members } = await supabase
-          .from('household_members').select('user_id, joined_at').eq('household_id', data.household_id);
+        const { data: myProfile } = await supabase.from('profiles').select('full_name, avatar_url').eq('id', user.id).single();
+        if (myProfile) { setProfileName(myProfile.full_name || ''); setProfileAvatar(myProfile.avatar_url || null); }
+        const { data: members } = await supabase.from('household_members').select('user_id, joined_at').eq('household_id', data.household_id);
         if (members) {
-          const { data: profiles } = await supabase
-            .from('profiles').select('id, full_name, avatar_url').in('id', members.map(m => m.user_id));
+          const { data: profiles } = await supabase.from('profiles').select('id, full_name, avatar_url').in('id', members.map(m => m.user_id));
           setHouseholdMembers(members.map(member => ({
             ...member,
             full_name: profiles?.find(p => p.id === member.user_id)?.full_name || 'Unknown',
@@ -223,33 +234,20 @@ export default function App() {
           })));
         }
       }
-    } catch (e) {
-      console.log('No household found');
-    }
+    } catch (e) { console.log('No household found'); }
   };
 
   const saveName = async () => {
     try {
       const { data: existing } = await supabase.from('profiles').select('id').eq('id', user.id).single();
-      if (existing) {
-        await supabase.from('profiles').update({ full_name: newName }).eq('id', user.id);
-      } else {
-        await supabase.from('profiles').insert([{ id: user.id, full_name: newName }]);
-      }
-      setProfileName(newName);
-      setEditingName(false);
-      loadHousehold();
-    } catch (e) {
-      Alert.alert('Failed to save name.');
-    }
+      if (existing) { await supabase.from('profiles').update({ full_name: newName }).eq('id', user.id); }
+      else { await supabase.from('profiles').insert([{ id: user.id, full_name: newName }]); }
+      setProfileName(newName); setEditingName(false); loadHousehold();
+    } catch (e) { Alert.alert('Failed to save name.'); }
   };
 
-  // Saves name + category edits for an existing item
   const saveItemEdit = async () => {
-    if (!editName.trim()) {
-      Alert.alert('Please enter a product name.');
-      return;
-    }
+    if (!editName.trim()) { Alert.alert('Please enter a product name.'); return; }
     try {
       const { error } = await supabase.from('inventory')
         .update({ name: editName, category: editCategory, low_stock_threshold: editThreshold ? parseInt(editThreshold) : null })
@@ -259,44 +257,19 @@ export default function App() {
         i.id === editingItem.id ? { ...i, name: editName, category: editCategory, low_stock_threshold: editThreshold ? parseInt(editThreshold) : null } : i
       ));
       setEditingItem(null);
-    } catch (e) {
-      Alert.alert('Failed to save changes.');
-    }
+    } catch (e) { Alert.alert('Failed to save changes.'); }
   };
 
   const shareHouseholdCode = async () => {
     try {
-      await Share.share({
-        message: `Join my household on Home Inventory! Use code: ${householdCode}`,
-        title: 'Home Inventory — Join Code',
-      });
-    } catch (e) {
-      Alert.alert('Could not open share sheet.');
-    }
+      await Share.share({ message: `Join my household on Home Inventory! Use code: ${householdCode}`, title: 'Home Inventory — Join Code' });
+    } catch (e) { Alert.alert('Could not open share sheet.'); }
   };
 
-  // Lets user pick a photo from camera, camera roll, or files and uploads to Supabase Storage
   const uploadAvatar = () => {
     Alert.alert('Profile Picture', 'Choose a source', [
-      {
-        text: 'Take Photo',
-        onPress: async () => {
-          const result = await ImagePicker.launchCameraAsync({
-            allowsEditing: true, aspect: [1, 1], quality: 0.7,
-          });
-          if (!result.canceled) processAvatarUpload(result.assets[0].uri);
-        }
-      },
-      {
-        text: 'Choose from Library',
-        onPress: async () => {
-          const result = await ImagePicker.launchImageLibraryAsync({
-            allowsEditing: true, aspect: [1, 1], quality: 0.7,
-            mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          });
-          if (!result.canceled) processAvatarUpload(result.assets[0].uri);
-        }
-      },
+      { text: 'Take Photo', onPress: async () => { const r = await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [1,1], quality: 0.7 }); if (!r.canceled) processAvatarUpload(r.assets[0].uri); } },
+      { text: 'Choose from Library', onPress: async () => { const r = await ImagePicker.launchImageLibraryAsync({ allowsEditing: true, aspect: [1,1], quality: 0.7, mediaTypes: ImagePicker.MediaTypeOptions.Images }); if (!r.canceled) processAvatarUpload(r.assets[0].uri); } },
       { text: 'Cancel', style: 'cancel' }
     ]);
   };
@@ -304,41 +277,19 @@ export default function App() {
   const processAvatarUpload = async (uri) => {
     setUploadingAvatar(true);
     try {
-      // Read the file as base64
       const response = await fetch(uri);
       const blob = await response.blob();
       const reader = new FileReader();
       reader.readAsArrayBuffer(blob);
       await new Promise((resolve) => { reader.onloadend = resolve; });
-      const arrayBuffer = reader.result;
-
       const filePath = `${user.id}.jpg`;
-
-      // Upload to Supabase Storage avatars bucket
-      const { error: uploadError } = await supabase.storage
-        .from('avatars')
-        .upload(filePath, arrayBuffer, {
-          contentType: 'image/jpeg',
-          upsert: true, // Overwrite if already exists
-        });
+      const { error: uploadError } = await supabase.storage.from('avatars').upload(filePath, reader.result, { contentType: 'image/jpeg', upsert: true });
       if (uploadError) throw uploadError;
-
-      // Get the public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('avatars')
-        .getPublicUrl(filePath);
-
-      // Save URL to profiles table
-      await supabase.from('profiles')
-        .update({ avatar_url: publicUrl })
-        .eq('id', user.id);
-
-      setProfileAvatar(publicUrl + '?t=' + Date.now()); // Cache bust
-    } catch (e) {
-      Alert.alert('Upload failed', e.message);
-    } finally {
-      setUploadingAvatar(false);
-    }
+      const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(filePath);
+      await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', user.id);
+      setProfileAvatar(publicUrl + '?t=' + Date.now());
+    } catch (e) { Alert.alert('Upload failed', e.message); }
+    finally { setUploadingAvatar(false); }
   };
 
   // ─── NOTIFICATION FUNCTIONS ─────────────────────────────────────────────
@@ -350,13 +301,7 @@ export default function App() {
 
   const sendLowStockNotification = async (itemName, qty) => {
     await Notifications.scheduleNotificationAsync({
-      content: {
-        title: '⚠️ Low Stock Alert',
-        body: qty === 0
-          ? `${itemName} is out of stock!`
-          : `${itemName} is running low — only ${qty} left.`,
-        sound: true,
-      },
+      content: { title: '⚠️ Low Stock Alert', body: qty === 0 ? `${itemName} is out of stock!` : `${itemName} is running low — only ${qty} left.`, sound: true },
       trigger: null,
     });
   };
@@ -365,30 +310,18 @@ export default function App() {
 
   const loadInventory = async () => {
     try {
-      const { data, error } = await supabase
-        .from('inventory').select('*').eq('household_id', householdId);
+      const { data, error } = await supabase.from('inventory').select('*').eq('household_id', householdId);
       if (error) throw error;
       if (data) setInventory(data);
-    } catch (e) {
-      console.log('Failed to load inventory', e);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { console.log('Failed to load inventory', e); }
+    finally { setLoading(false); }
   };
 
   const addItem = async () => {
-    if (productName.trim() === '') {
-      Alert.alert('Please enter a product name.');
-      return;
-    }
+    if (productName.trim() === '') { Alert.alert('Please enter a product name.'); return; }
     const newItem = {
-      id: Date.now().toString(),
-      barcode: currentBarcode,
-      name: productName,
-      quantity: quantity,
-      image: productImage,
-      category: selectedCategory,
-      household_id: householdId,
+      id: Date.now().toString(), barcode: currentBarcode, name: productName, quantity: quantity,
+      image: productImage, category: selectedCategory, household_id: householdId,
       expiration_date: expirationDate.trim() || null,
       low_stock_threshold: lowStockThreshold ? parseInt(lowStockThreshold) : null,
     };
@@ -403,9 +336,7 @@ export default function App() {
       setProductName(''); setQuantity('1'); setProductImage(null);
       setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setLowStockThreshold('2');
       setActiveTab('inventory');
-    } catch (e) {
-      Alert.alert('Failed to add item: ' + JSON.stringify(e));
-    }
+    } catch (e) { Alert.alert('Failed to add item: ' + JSON.stringify(e)); }
   };
 
   const deleteItem = async (id) => {
@@ -413,9 +344,7 @@ export default function App() {
       const { error } = await supabase.from('inventory').delete().eq('id', id);
       if (error) throw error;
       setInventory(prev => prev.filter(item => item.id !== id));
-    } catch (e) {
-      Alert.alert('Failed to delete item.');
-    }
+    } catch (e) { Alert.alert('Failed to delete item.'); }
   };
 
   const changeQuantity = async (id, delta) => {
@@ -423,16 +352,12 @@ export default function App() {
     if (!item) return;
     const newQty = Math.max(0, parseInt(item.quantity) + delta);
     const threshold = item.low_stock_threshold != null ? item.low_stock_threshold : LOW_STOCK_THRESHOLD;
-    if (newQty === threshold || newQty === 0) {
-      sendLowStockNotification(item.name, newQty);
-    }
+    if (newQty === threshold || newQty === 0) sendLowStockNotification(item.name, newQty);
     try {
       const { error } = await supabase.from('inventory').update({ quantity: newQty.toString() }).eq('id', id);
       if (error) throw error;
       setInventory(prev => prev.map(i => i.id === id ? { ...i, quantity: newQty.toString() } : i));
-    } catch (e) {
-      Alert.alert('Failed to update quantity.');
-    }
+    } catch (e) { Alert.alert('Failed to update quantity.'); }
   };
 
   // ─── LOCAL BARCODE CACHE ────────────────────────────────────────────────
@@ -443,77 +368,44 @@ export default function App() {
       const cache = existing ? JSON.parse(existing) : {};
       cache[barcode] = { name, category, image };
       await AsyncStorage.setItem('barcodeCache', JSON.stringify(cache));
-    } catch (e) {
-      console.log('Failed to save to cache');
-    }
+    } catch (e) { console.log('Failed to save to cache'); }
   };
 
   const checkLocalCache = async (barcode) => {
     try {
       const existing = await AsyncStorage.getItem('barcodeCache');
       if (!existing) return null;
-      const cache = JSON.parse(existing);
-      return cache[barcode] || null;
-    } catch (e) {
-      return null;
-    }
+      return JSON.parse(existing)[barcode] || null;
+    } catch (e) { return null; }
   };
 
-  // Checks Supabase shared barcode cache — available to all users globally
   const checkSharedBarcodeCache = async (barcode) => {
     try {
-      const { data } = await supabase
-        .from('barcode_cache')
-        .select('name, category, image_url')
-        .eq('barcode', barcode)
-        .single();
+      const { data } = await supabase.from('barcode_cache').select('name, category, image_url').eq('barcode', barcode).single();
       return data || null;
-    } catch (e) {
-      return null;
-    }
+    } catch (e) { return null; }
   };
 
-  // Saves barcode info to Supabase shared cache.
-  // If a local image URI is provided, uploads it to Storage first.
   const saveToSharedBarcodeCache = async (barcode, name, category, imageUri) => {
     try {
       let imageUrl = null;
-
-      // Upload image to barcode-images bucket if user provided one
       if (imageUri && imageUri.startsWith('file')) {
         const response = await fetch(imageUri);
         const blob = await response.blob();
         const reader = new FileReader();
         reader.readAsArrayBuffer(blob);
         await new Promise((resolve) => { reader.onloadend = resolve; });
-        const arrayBuffer = reader.result;
         const filePath = `${barcode}.jpg`;
-        const { error: uploadError } = await supabase.storage
-          .from('barcode-images')
-          .upload(filePath, arrayBuffer, { contentType: 'image/jpeg', upsert: true });
+        const { error: uploadError } = await supabase.storage.from('barcode-images').upload(filePath, reader.result, { contentType: 'image/jpeg', upsert: true });
         if (!uploadError) {
-          const { data: { publicUrl } } = supabase.storage
-            .from('barcode-images')
-            .getPublicUrl(filePath);
+          const { data: { publicUrl } } = supabase.storage.from('barcode-images').getPublicUrl(filePath);
           imageUrl = publicUrl;
         }
       } else if (imageUri && imageUri.startsWith('http')) {
-        // Already a remote URL (from Open Food Facts / UPC Item DB) — store directly
         imageUrl = imageUri;
       }
-
-      // Upsert to shared cache — skip if barcode already exists
-      await supabase.from('barcode_cache').upsert([{
-        barcode,
-        name,
-        category,
-        image_url: imageUrl,
-        created_by: user.id,
-      }], { onConflict: 'barcode', ignoreDuplicates: true });
-
-    } catch (e) {
-      console.log('Failed to save to shared cache', e);
-    }
+      await supabase.from('barcode_cache').upsert([{ barcode, name, category, image_url: imageUrl, created_by: user.id }], { onConflict: 'barcode', ignoreDuplicates: true });
+    } catch (e) { console.log('Failed to save to shared cache', e); }
   };
 
   // ─── BARCODE SCANNING ───────────────────────────────────────────────────
@@ -521,17 +413,13 @@ export default function App() {
   const handleBarcode = ({ data }) => {
     if (scanned.current) return;
     if (!cameraReady.current) return;
-    scanned.current = true;
-    setScanning(false);
-    setScanStatus('Looking up product...');
-    setActiveTab('scan');
+    scanned.current = true; setScanning(false);
+    setScanStatus('Looking up product...'); setActiveTab('scan');
     lookupProduct(data);
   };
 
   const lookupProduct = async (barcode) => {
     setCurrentBarcode(barcode);
-
-    // 1. Check shared Supabase cache first — covers barcodes added by any user
     const sharedCached = await checkSharedBarcodeCache(barcode);
     if (sharedCached) {
       const existing = inventory.find(item => item.barcode === barcode);
@@ -540,15 +428,11 @@ export default function App() {
         setScanStatus(`✓ Updated: ${sharedCached.name} is now x${parseInt(existing.quantity) + 1}`);
         setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
       } else {
-        setProductName(sharedCached.name);
-        setProductImage(sharedCached.image_url);
-        setSelectedCategory(sharedCached.category);
-        setScanStatus(''); setActiveTab('add');
+        setProductName(sharedCached.name); setProductImage(sharedCached.image_url);
+        setSelectedCategory(sharedCached.category); setScanStatus(''); setActiveTab('add');
       }
       return;
     }
-
-    // 2. Check local device cache
     const cached = await checkLocalCache(barcode);
     if (cached) {
       const existing = inventory.find(item => item.barcode === barcode);
@@ -575,12 +459,9 @@ export default function App() {
             setScanStatus(`✓ Updated: ${name} is now x${parseInt(existing.quantity) + 1}`);
             setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
           } else {
-            setProductName(name); setProductImage(image);
-            setSelectedCategory(category); setScanStatus(''); setActiveTab('add');
+            setProductName(name); setProductImage(image); setSelectedCategory(category); setScanStatus(''); setActiveTab('add');
           }
-        } else {
-          lookupProductFallback(barcode);
-        }
+        } else { lookupProductFallback(barcode); }
       })
       .catch(() => lookupProductFallback(barcode));
   };
@@ -600,89 +481,103 @@ export default function App() {
             setScanStatus(`✓ Updated: ${name} is now x${parseInt(existing.quantity) + 1}`);
             setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
           } else {
-            setProductName(name); setProductImage(image);
-            setSelectedCategory(category); setScanStatus(''); setActiveTab('add');
+            setProductName(name); setProductImage(image); setSelectedCategory(category); setScanStatus(''); setActiveTab('add');
           }
         } else {
           setScanStatus('');
-          Alert.alert('Product Not Found',
-            'This barcode wasn\'t recognized. You can add it manually — next time you scan this barcode it will be remembered automatically.',
-            [
-              { text: 'Add Manually', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
-              { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }
-            ]
-          );
+          Alert.alert('Product Not Found', 'This barcode wasn\'t recognized. You can add it manually — next time you scan it will be remembered.',
+            [{ text: 'Add Manually', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
+             { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }]);
         }
       })
       .catch(() => {
         setScanStatus('');
-        Alert.alert('Lookup Failed', 'Could not connect to product database. You can add it manually.',
-          [
-            { text: 'Add Manually', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
-            { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }
-          ]
-        );
+        Alert.alert('Lookup Failed', 'Could not connect to product database.',
+          [{ text: 'Add Manually', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
+           { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }]);
       });
   };
 
   // ─── CATEGORY DETECTION ─────────────────────────────────────────────────
+  // Updated to return subcategories where possible
 
   const detectCategory = (tags) => {
     if (!tags) return 'other';
-    const tagString = Array.isArray(tags) ? tags.join(' ').toLowerCase() : tags.toLowerCase();
-    if (tagString.includes('hygiene') || tagString.includes('beauty') || tagString.includes('personal-care') ||
-      tagString.includes('hair-care') || tagString.includes('oral-care') || tagString.includes('skin-care') ||
-      tagString.includes('body-care') || tagString.includes('cosmetic') || tagString.includes('deodorant') ||
-      tagString.includes('shampoo') || tagString.includes('conditioner') || tagString.includes('toothpaste') ||
-      tagString.includes('mouthwash') || tagString.includes('chapstick') || tagString.includes('lip-balm')) return 'hygiene';
-    if (tagString.includes('clean') || tagString.includes('household') || tagString.includes('detergent') ||
-      tagString.includes('laundry') || tagString.includes('dishwash')) return 'cleaning';
-    if (tagString.includes('beverage') || tagString.includes('drink') || tagString.includes('juice') ||
-      tagString.includes('soda') || tagString.includes('water') || tagString.includes('coffee') ||
-      tagString.includes('tea')) return 'drinks';
-    if (tagString.includes('food') || tagString.includes('dairy') || tagString.includes('snack') ||
-      tagString.includes('grocery')) return 'food';
+    const t = Array.isArray(tags) ? tags.join(' ').toLowerCase() : tags.toLowerCase();
+    if (t.includes('hygiene') || t.includes('beauty') || t.includes('personal-care') || t.includes('hair-care') ||
+      t.includes('oral-care') || t.includes('skin-care') || t.includes('cosmetic') || t.includes('deodorant') ||
+      t.includes('shampoo') || t.includes('toothpaste') || t.includes('mouthwash')) return 'hygiene';
+    if (t.includes('clean') || t.includes('detergent') || t.includes('laundry') || t.includes('dishwash')) return 'cleaning';
+    if (t.includes('water')) return 'water';
+    if (t.includes('juice')) return 'juice';
+    if (t.includes('soda') || t.includes('soft-drink')) return 'soda';
+    if (t.includes('coffee') || t.includes('tea')) return 'coffee_tea';
+    if (t.includes('alcohol') || t.includes('wine') || t.includes('beer') || t.includes('spirit')) return 'alcohol';
+    if (t.includes('beverage') || t.includes('drink')) return 'drinks';
+    if (t.includes('produce') || t.includes('vegetable') || t.includes('fruit') || t.includes('fresh')) return 'produce';
+    if (t.includes('dairy') || t.includes('milk') || t.includes('cheese') || t.includes('yogurt') || t.includes('butter')) return 'dairy';
+    if (t.includes('meat') || t.includes('poultry') || t.includes('beef') || t.includes('chicken') || t.includes('pork') || t.includes('fish') || t.includes('seafood')) return 'meat';
+    if (t.includes('frozen')) return 'frozen';
+    if (t.includes('bread') || t.includes('bakery') || t.includes('pastry') || t.includes('cake')) return 'bakery';
+    if (t.includes('canned') || t.includes('tinned')) return 'canned';
+    if (t.includes('sauce') || t.includes('condiment') || t.includes('dressing') || t.includes('vinegar') || t.includes('oil')) return 'condiments';
+    if (t.includes('snack') || t.includes('chip') || t.includes('cracker') || t.includes('cookie') || t.includes('candy')) return 'snacks';
+    if (t.includes('food') || t.includes('grocery')) return 'food';
     return 'other';
   };
 
   const detectCategoryFromString = (category) => {
     if (!category) return 'other';
-    const cat = category.toLowerCase();
-    if (cat.includes('health') || cat.includes('beauty') || cat.includes('personal') || cat.includes('hair') ||
-      cat.includes('skin') || cat.includes('oral') || cat.includes('hygiene') || cat.includes('cosmetic')) return 'hygiene';
-    if (cat.includes('clean') || cat.includes('household') || cat.includes('laundry') || cat.includes('paper') ||
-      cat.includes('towel') || cat.includes('detergent')) return 'cleaning';
-    if (cat.includes('beverage') || cat.includes('drink') || cat.includes('juice') || cat.includes('soda') ||
-      cat.includes('water') || cat.includes('coffee') || cat.includes('tea')) return 'drinks';
-    if (cat.includes('food') || cat.includes('grocery') || cat.includes('snack')) return 'food';
+    const c = category.toLowerCase();
+    if (c.includes('health') || c.includes('beauty') || c.includes('personal') || c.includes('hair') || c.includes('oral') || c.includes('hygiene') || c.includes('cosmetic')) return 'hygiene';
+    if (c.includes('clean') || c.includes('household') || c.includes('laundry') || c.includes('detergent')) return 'cleaning';
+    if (c.includes('water')) return 'water';
+    if (c.includes('juice')) return 'juice';
+    if (c.includes('soda')) return 'soda';
+    if (c.includes('coffee') || c.includes('tea')) return 'coffee_tea';
+    if (c.includes('alcohol') || c.includes('wine') || c.includes('beer')) return 'alcohol';
+    if (c.includes('beverage') || c.includes('drink')) return 'drinks';
+    if (c.includes('produce') || c.includes('vegetable') || c.includes('fruit')) return 'produce';
+    if (c.includes('dairy') || c.includes('milk') || c.includes('cheese')) return 'dairy';
+    if (c.includes('meat') || c.includes('poultry') || c.includes('seafood')) return 'meat';
+    if (c.includes('frozen')) return 'frozen';
+    if (c.includes('bakery') || c.includes('bread')) return 'bakery';
+    if (c.includes('canned')) return 'canned';
+    if (c.includes('condiment') || c.includes('sauce')) return 'condiments';
+    if (c.includes('snack') || c.includes('chip') || c.includes('candy')) return 'snacks';
+    if (c.includes('food') || c.includes('grocery')) return 'food';
     return 'other';
   };
 
-  // ─── IMAGE PICKER FUNCTIONS ─────────────────────────────────────────────
+  // ─── IMAGE PICKER ───────────────────────────────────────────────────────
 
   const pickImage = async () => {
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true, aspect: [1, 1], quality: 0.5,
-    });
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [1,1], quality: 0.5 });
     if (!result.canceled) setProductImage(result.assets[0].uri);
   };
 
   const takePhoto = async () => {
-    let result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true, aspect: [1, 1], quality: 0.5,
-    });
+    const result = await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [1,1], quality: 0.5 });
     if (!result.canceled) setProductImage(result.assets[0].uri);
   };
 
   // ─── HELPER FUNCTIONS ───────────────────────────────────────────────────
 
+  // Returns color for any category value (main or subcategory)
   const getCategoryColor = (value) => {
-    const cat = CATEGORIES.find(c => c.value === value);
+    const cat = ALL_CATEGORIES.find(c => c.value === value);
     return cat ? cat.color : '#7f8c8d';
   };
 
-  // Uses per-item threshold if set, otherwise falls back to the global constant
+  // Returns display label for any category value
+  const getCategoryLabel = (value) => {
+    const cat = ALL_CATEGORIES.find(c => c.value === value);
+    return cat ? cat.label : 'Other';
+  };
+
+  // Returns the parent category value (for filtering/grouping)
+  const getParentCategory = (value) => CATEGORY_PARENT_MAP[value] || 'other';
+
   const isLowStock = (qty, item) => {
     const threshold = item?.low_stock_threshold != null ? item.low_stock_threshold : LOW_STOCK_THRESHOLD;
     return parseInt(qty) <= threshold;
@@ -694,7 +589,8 @@ export default function App() {
       result = result.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()));
     }
     if (filterCategory !== 'all') {
-      result = result.filter(item => item.category === filterCategory);
+      // Filter matches exact value OR parent category — so 'food' filter catches 'produce', 'dairy', etc.
+      result = result.filter(item => item.category === filterCategory || getParentCategory(item.category) === filterCategory);
     }
     if (sortBy === 'name') result.sort((a, b) => a.name.localeCompare(b.name));
     else if (sortBy === 'category') result.sort((a, b) => (a.category || '').localeCompare(b.category || ''));
@@ -702,23 +598,86 @@ export default function App() {
     return result;
   };
 
+  // Shopping list groups by parent category
   const shoppingList = inventory.filter(item => parseInt(item.quantity) === 0);
+  const shoppingListParents = MAIN_CATEGORIES.filter(cat =>
+    shoppingList.some(item => getParentCategory(item.category) === cat.value)
+  );
+
+  // Returns true if selected category is a food or drink type (shows expiration date field)
+  const showExpirationField = () => {
+    const parent = getParentCategory(selectedCategory);
+    return parent === 'food' || parent === 'drinks';
+  };
+
+  // ─── CATEGORY SELECTOR COMPONENT ───────────────────────────────────────
+  // Two-level selector: pick main category, then optional subcategory
+  // Used in both Add Item and Edit Item
+
+  const CategorySelector = ({ selected, onSelect }) => {
+    const parent = getParentCategory(selected);
+    return (
+      <View>
+        {/* Row 1: Main categories */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
+          {MAIN_CATEGORIES.map(cat => (
+            <TouchableOpacity
+              key={cat.value}
+              style={[styles.categoryBtn, { backgroundColor: parent === cat.value ? cat.color : '#ddd', marginRight: 8 }]}
+              onPress={() => onSelect(cat.value)}
+            >
+              <Text numberOfLines={1} style={[styles.categoryBtnText, { color: parent === cat.value ? 'white' : '#555' }]}>
+                {cat.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
+        {/* Row 2: Food subcategories */}
+        {parent === 'food' && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+            {FOOD_SUBCATEGORIES.map(cat => (
+              <TouchableOpacity
+                key={cat.value}
+                style={[styles.categoryBtn, { backgroundColor: selected === cat.value ? cat.color : '#eee', marginRight: 8 }]}
+                onPress={() => onSelect(cat.value)}
+              >
+                <Text numberOfLines={1} style={[styles.categoryBtnText, { color: selected === cat.value ? 'white' : '#555' }]}>
+                  {cat.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+
+        {/* Row 3: Drinks subcategories */}
+        {parent === 'drinks' && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+            {DRINKS_SUBCATEGORIES.map(cat => (
+              <TouchableOpacity
+                key={cat.value}
+                style={[styles.categoryBtn, { backgroundColor: selected === cat.value ? cat.color : '#eee', marginRight: 8 }]}
+                onPress={() => onSelect(cat.value)}
+              >
+                <Text numberOfLines={1} style={[styles.categoryBtnText, { color: selected === cat.value ? 'white' : '#555' }]}>
+                  {cat.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+      </View>
+    );
+  };
 
   // ─── CONDITIONAL SCREENS ────────────────────────────────────────────────
 
   if (checkingAuth) {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f4f4f4' }}>
-        <ActivityIndicator size="large" color="#27ae60" />
-      </View>
-    );
+    return <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f4f4f4' }}><ActivityIndicator size="large" color="#27ae60" /></View>;
   }
 
   if (resetPasswordMode) {
-    return <ResetPasswordScreen onComplete={() => {
-      setResetPasswordMode(false);
-      supabase.auth.signOut();
-    }} />;
+    return <ResetPasswordScreen onComplete={() => { setResetPasswordMode(false); supabase.auth.signOut(); }} />;
   }
 
   if (!user) return <AuthScreen />;
@@ -728,9 +687,7 @@ export default function App() {
     return (
       <View style={{ flex: 1 }}>
         <CameraView
-          style={StyleSheet.absoluteFillObject}
-          facing="back"
-          onBarcodeScanned={handleBarcode}
+          style={StyleSheet.absoluteFillObject} facing="back" onBarcodeScanned={handleBarcode}
           barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128'] }}
           onCameraReady={() => { setTimeout(() => { cameraReady.current = true; }, 1500); }}
         />
@@ -740,10 +697,7 @@ export default function App() {
           <Text style={styles.scanHint}>Point at a barcode to scan</Text>
         </View>
         <View style={styles.scanCancelRow}>
-          <TouchableOpacity style={styles.scanCancelBtn} onPress={() => {
-            setScanning(false); scanned.current = false;
-            cameraReady.current = false; setActiveTab('inventory');
-          }}>
+          <TouchableOpacity style={styles.scanCancelBtn} onPress={() => { setScanning(false); scanned.current = false; cameraReady.current = false; setActiveTab('inventory'); }}>
             <Text style={styles.scanCancelText}>Cancel</Text>
           </TouchableOpacity>
         </View>
@@ -752,12 +706,7 @@ export default function App() {
   }
 
   if (activeTab === 'scan' && scanStatus) {
-    return (
-      <View style={styles.lookupScreen}>
-        <ActivityIndicator size="large" color="#27ae60" />
-        <Text style={styles.lookupText}>{scanStatus}</Text>
-      </View>
-    );
+    return <View style={styles.lookupScreen}><ActivityIndicator size="large" color="#27ae60" /><Text style={styles.lookupText}>{scanStatus}</Text></View>;
   }
 
   // ─── MAIN APP UI ────────────────────────────────────────────────────────
@@ -768,32 +717,17 @@ export default function App() {
       {activeTab === 'inventory' && (
         <View style={styles.screen}>
           <Text style={styles.title}>Home Inventory</Text>
+          <TextInput style={styles.searchBar} placeholder="🔍 Search inventory..." placeholderTextColor="#999" value={searchQuery} onChangeText={setSearchQuery} />
 
-          <TextInput
-            style={styles.searchBar}
-            placeholder="🔍 Search inventory..."
-            placeholderTextColor="#999"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-
+          {/* Filter tabs use MAIN_CATEGORIES only */}
           <View style={styles.filterSortRow}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
-              <TouchableOpacity
-                style={[styles.filterTab, filterCategory === 'all' && styles.filterTabActive]}
-                onPress={() => setFilterCategory('all')}
-              >
+              <TouchableOpacity style={[styles.filterTab, filterCategory === 'all' && styles.filterTabActive]} onPress={() => setFilterCategory('all')}>
                 <Text style={[styles.filterTabText, filterCategory === 'all' && styles.filterTabTextActive]}>All</Text>
               </TouchableOpacity>
-              {CATEGORIES.map(cat => (
-                <TouchableOpacity
-                  key={cat.value}
-                  style={[styles.filterTab, filterCategory === cat.value && { backgroundColor: cat.color }]}
-                  onPress={() => setFilterCategory(cat.value)}
-                >
-                  <Text style={[styles.filterTabText, filterCategory === cat.value && styles.filterTabTextActive]}>
-                    {cat.label}
-                  </Text>
+              {MAIN_CATEGORIES.map(cat => (
+                <TouchableOpacity key={cat.value} style={[styles.filterTab, filterCategory === cat.value && { backgroundColor: cat.color }]} onPress={() => setFilterCategory(cat.value)}>
+                  <Text style={[styles.filterTabText, filterCategory === cat.value && styles.filterTabTextActive]}>{cat.label}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -807,135 +741,68 @@ export default function App() {
 
           {showSortOptions && (
             <View style={styles.sortDropdown}>
-              {[
-                { label: 'Name (A-Z)', value: 'name' },
-                { label: 'Category', value: 'category' },
-                { label: 'Low Stock First', value: 'lowstock' },
-              ].map(option => (
-                <TouchableOpacity
-                  key={option.value}
-                  style={[styles.sortOption, sortBy === option.value && styles.sortOptionActive]}
-                  onPress={() => { setSortBy(option.value); setShowSortOptions(false); }}
-                >
-                  <Text style={[styles.sortOptionText, sortBy === option.value && styles.sortOptionTextActive]}>
-                    {option.label}
-                  </Text>
+              {[{ label: 'Name (A-Z)', value: 'name' }, { label: 'Category', value: 'category' }, { label: 'Low Stock First', value: 'lowstock' }].map(option => (
+                <TouchableOpacity key={option.value} style={[styles.sortOption, sortBy === option.value && styles.sortOptionActive]} onPress={() => { setSortBy(option.value); setShowSortOptions(false); }}>
+                  <Text style={[styles.sortOptionText, sortBy === option.value && styles.sortOptionTextActive]}>{option.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>
           )}
 
           {loading ? (
-            <View style={styles.emptyState}>
-              <ActivityIndicator size="large" color="#2c3e50" />
-              <Text style={styles.emptyStateText}>Loading inventory...</Text>
-            </View>
+            <View style={styles.emptyState}><ActivityIndicator size="large" color="#2c3e50" /><Text style={styles.emptyStateText}>Loading inventory...</Text></View>
           ) : getFilteredAndSorted().length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateIcon}>📦</Text>
-              <Text style={styles.emptyStateText}>
-                {searchQuery || filterCategory !== 'all' ? 'No items match your search.' : 'No items yet. Tap Scan to get started!'}
-              </Text>
+              <Text style={styles.emptyStateText}>{searchQuery || filterCategory !== 'all' ? 'No items match your search.' : 'No items yet. Tap Scan to get started!'}</Text>
             </View>
           ) : compactView ? (
-            /* ── COMPACT LIST VIEW ── */
             <FlatList
-              data={getFilteredAndSorted()}
-              keyExtractor={item => item.id}
+              data={getFilteredAndSorted()} keyExtractor={item => item.id}
               renderItem={({ item }) => (
                 <View style={[styles.compactItem, isLowStock(item.quantity, item) && styles.itemLowStock]}>
                   <View style={[styles.compactDot, { backgroundColor: getCategoryColor(item.category) }]} />
                   <Text style={styles.compactName} numberOfLines={1}>{item.name}</Text>
                   {isLowStock(item.quantity, item) && <Text style={styles.compactLowStock}>⚠️</Text>}
                   <View style={styles.qtyControls}>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, -1)}>
-                      <Text style={styles.qtyBtnText}>−</Text>
-                    </TouchableOpacity>
-                    <Text style={[styles.qtyNumber, isLowStock(item.quantity, item) && styles.qtyLow]}>
-                      {item.quantity}
-                    </Text>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, 1)}>
-                      <Text style={styles.qtyBtnText}>+</Text>
-                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, -1)}><Text style={styles.qtyBtnText}>−</Text></TouchableOpacity>
+                    <Text style={[styles.qtyNumber, isLowStock(item.quantity, item) && styles.qtyLow]}>{item.quantity}</Text>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, 1)}><Text style={styles.qtyBtnText}>+</Text></TouchableOpacity>
                   </View>
-                  <TouchableOpacity onPress={() => deleteItem(item.id)}>
-                    <Text style={styles.deleteBtn}>✕</Text>
-                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => deleteItem(item.id)}><Text style={styles.deleteBtn}>✕</Text></TouchableOpacity>
                 </View>
               )}
             />
           ) : (
-            /* ── CARD VIEW ──
-               Tapping anywhere on the card opens the detail modal.
-               Qty +/- and delete still work independently via onPress with stopPropagation via their own TouchableOpacity. */
             <FlatList
-              data={getFilteredAndSorted()}
-              keyExtractor={item => item.id}
+              data={getFilteredAndSorted()} keyExtractor={item => item.id}
               renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[styles.item, isLowStock(item.quantity, item) && styles.itemLowStock]}
-                  onPress={() => setSelectedItem(item)}
-                  activeOpacity={0.75}
-                >
-                  {/* Product Image */}
-                  {item.image ? (
-                    <Image source={{ uri: item.image }} style={styles.itemImage} />
-                  ) : (
-                    <View style={styles.itemImagePlaceholder}>
-                      <Ionicons name="image-outline" size={20} color="#bbb" />
-                    </View>
-                  )}
-
-                  {/* Product Info */}
+                <TouchableOpacity style={[styles.item, isLowStock(item.quantity, item) && styles.itemLowStock]} onPress={() => setSelectedItem(item)} activeOpacity={0.75}>
+                  {item.image ? <Image source={{ uri: item.image }} style={styles.itemImage} /> : <View style={styles.itemImagePlaceholder}><Ionicons name="image-outline" size={20} color="#bbb" /></View>}
                   <View style={styles.itemInfo}>
                     <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
                     <View style={styles.itemTagRow}>
                       <View style={[styles.categoryTag, { backgroundColor: getCategoryColor(item.category) }]}>
-                        <Text style={styles.categoryTagText}>
-                          {CATEGORIES.find(c => c.value === item.category)?.label || 'Other'}
-                        </Text>
+                        <Text style={styles.categoryTagText}>{getCategoryLabel(item.category)}</Text>
                       </View>
                       {isLowStock(item.quantity, item) && (
-                        <View style={styles.lowStockTag}>
-                          <Text style={styles.lowStockTagText}>
-                            {parseInt(item.quantity) === 0 ? '⚠️ Out' : '⚠️ Low'}
-                          </Text>
-                        </View>
+                        <View style={styles.lowStockTag}><Text style={styles.lowStockTagText}>{parseInt(item.quantity) === 0 ? '⚠️ Out' : '⚠️ Low'}</Text></View>
                       )}
                       {item.expiration_date && (() => {
                         const exp = new Date(item.expiration_date);
-                        const today = new Date();
-                        const daysUntil = Math.ceil((exp - today) / (1000 * 60 * 60 * 24));
-                        if (daysUntil < 0) return (
-                          <View style={styles.expiredTag}><Text style={styles.expiredTagText}>⚠️ Expired</Text></View>
-                        );
-                        if (daysUntil <= 7) return (
-                          <View style={styles.expiringSoonTag}><Text style={styles.expiringSoonTagText}>⏰ {daysUntil}d left</Text></View>
-                        );
-                        return (
-                          <View style={styles.expirationTag}><Text style={styles.expirationTagText}>📅 {item.expiration_date}</Text></View>
-                        );
+                        const daysUntil = Math.ceil((exp - new Date()) / (1000 * 60 * 60 * 24));
+                        if (daysUntil < 0) return <View style={styles.expiredTag}><Text style={styles.expiredTagText}>⚠️ Expired</Text></View>;
+                        if (daysUntil <= 7) return <View style={styles.expiringSoonTag}><Text style={styles.expiringSoonTagText}>⏰ {daysUntil}d left</Text></View>;
+                        return <View style={styles.expirationTag}><Text style={styles.expirationTagText}>📅 {item.expiration_date}</Text></View>;
                       })()}
                     </View>
                   </View>
-
-                  {/* Qty Controls — stopPropagation so tapping +/- doesn't open the modal */}
                   <View style={styles.qtyControls}>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, -1); }}>
-                      <Text style={styles.qtyBtnText}>−</Text>
-                    </TouchableOpacity>
-                    <Text style={[styles.qtyNumber, isLowStock(item.quantity, item) && styles.qtyLow]}>
-                      {item.quantity}
-                    </Text>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, 1); }}>
-                      <Text style={styles.qtyBtnText}>+</Text>
-                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, -1); }}><Text style={styles.qtyBtnText}>−</Text></TouchableOpacity>
+                    <Text style={[styles.qtyNumber, isLowStock(item.quantity, item) && styles.qtyLow]}>{item.quantity}</Text>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, 1); }}><Text style={styles.qtyBtnText}>+</Text></TouchableOpacity>
                   </View>
-
-                  {/* Delete */}
-                  <TouchableOpacity onPress={(e) => { e.stopPropagation?.(); deleteItem(item.id); }}>
-                    <Text style={styles.deleteBtn}>✕</Text>
-                  </TouchableOpacity>
+                  <TouchableOpacity onPress={(e) => { e.stopPropagation?.(); deleteItem(item.id); }}><Text style={styles.deleteBtn}>✕</Text></TouchableOpacity>
                 </TouchableOpacity>
               )}
             />
@@ -948,76 +815,28 @@ export default function App() {
         <ScrollView style={styles.screen} contentContainerStyle={styles.addContent}>
           <Text style={styles.title}>Add Item</Text>
           <View style={styles.addImageRow}>
-            {productImage ? (
-              <Image source={{ uri: productImage }} style={styles.addPreviewImage} />
-            ) : (
-              <View style={styles.addImagePlaceholder}>
-                <Text style={styles.addImagePlaceholderText}>No Image</Text>
-              </View>
-            )}
+            {productImage ? <Image source={{ uri: productImage }} style={styles.addPreviewImage} /> : <View style={styles.addImagePlaceholder}><Text style={styles.addImagePlaceholderText}>No Image</Text></View>}
             <View style={styles.addImageBtns}>
-              <TouchableOpacity style={styles.imgBtn} onPress={takePhoto}>
-                <Text style={styles.imgBtnText}>Take Photo</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.imgBtn} onPress={pickImage}>
-                <Text style={styles.imgBtnText}>Choose Photo</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.imgBtn} onPress={takePhoto}><Text style={styles.imgBtnText}>Take Photo</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.imgBtn} onPress={pickImage}><Text style={styles.imgBtnText}>Choose Photo</Text></TouchableOpacity>
             </View>
           </View>
           <Text style={styles.formLabel}>Product Name</Text>
-          <TextInput
-            style={styles.formInput} placeholder="e.g. Bounty Paper Towels"
-            placeholderTextColor="#999" value={productName} onChangeText={setProductName}
-          />
+          <TextInput style={styles.formInput} placeholder="e.g. Bounty Paper Towels" placeholderTextColor="#999" value={productName} onChangeText={setProductName} />
           <Text style={styles.formLabel}>Quantity</Text>
-          <TextInput
-            style={[styles.formInput, { width: 80 }]} placeholder="1"
-            placeholderTextColor="#999" value={quantity} onChangeText={setQuantity} keyboardType="numeric"
-          />
+          <TextInput style={[styles.formInput, { width: 80 }]} placeholder="1" placeholderTextColor="#999" value={quantity} onChangeText={setQuantity} keyboardType="numeric" />
           <Text style={styles.formLabel}>Category</Text>
-          <View style={styles.categoryRow}>
-            {CATEGORIES.map(cat => (
-              <TouchableOpacity
-                key={cat.value}
-                style={[styles.categoryBtn, { backgroundColor: selectedCategory === cat.value ? cat.color : '#ddd' }]}
-                onPress={() => setSelectedCategory(cat.value)}
-              >
-                <Text style={[styles.categoryBtnText, { color: selectedCategory === cat.value ? 'white' : '#555' }]}>
-                  {cat.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          {(selectedCategory === 'food' || selectedCategory === 'drinks') && (
+          <CategorySelector selected={selectedCategory} onSelect={setSelectedCategory} />
+          {showExpirationField() && (
             <>
-              <Text style={styles.formLabel}>
-                Expiration Date <Text style={{ color: '#999', fontWeight: 'normal' }}>(optional)</Text>
-              </Text>
-              <TextInput
-                style={styles.formInput} placeholder="MM/DD/YYYY"
-                placeholderTextColor="#999" value={expirationDate} onChangeText={setExpirationDate}
-              />
+              <Text style={styles.formLabel}>Expiration Date <Text style={{ color: '#999', fontWeight: 'normal' }}>(optional)</Text></Text>
+              <TextInput style={styles.formInput} placeholder="MM/DD/YYYY" placeholderTextColor="#999" value={expirationDate} onChangeText={setExpirationDate} />
             </>
           )}
-          <Text style={styles.formLabel}>
-            Low Stock Alert <Text style={{ color: '#999', fontWeight: 'normal' }}>(alert when qty reaches this)</Text>
-          </Text>
-          <TextInput
-            style={[styles.formInput, { width: 80 }]}
-            placeholder="2"
-            placeholderTextColor="#999"
-            value={lowStockThreshold}
-            onChangeText={setLowStockThreshold}
-            keyboardType="numeric"
-          />
-          <TouchableOpacity style={styles.confirmBtn} onPress={addItem}>
-            <Text style={styles.confirmBtnText}>Add to Inventory</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.cancelFormBtn} onPress={() => {
-            setProductName(''); setQuantity('1'); setProductImage(null);
-            setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate('');
-            setActiveTab('inventory');
-          }}>
+          <Text style={styles.formLabel}>Low Stock Alert <Text style={{ color: '#999', fontWeight: 'normal' }}>(alert when qty reaches this)</Text></Text>
+          <TextInput style={[styles.formInput, { width: 80 }]} placeholder="2" placeholderTextColor="#999" value={lowStockThreshold} onChangeText={setLowStockThreshold} keyboardType="numeric" />
+          <TouchableOpacity style={styles.confirmBtn} onPress={addItem}><Text style={styles.confirmBtnText}>Add to Inventory</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.cancelFormBtn} onPress={() => { setProductName(''); setQuantity('1'); setProductImage(null); setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setActiveTab('inventory'); }}>
             <Text style={styles.cancelFormBtnText}>Cancel</Text>
           </TouchableOpacity>
         </ScrollView>
@@ -1028,71 +847,48 @@ export default function App() {
         <View style={styles.screen}>
           <Text style={styles.title}>Shopping List</Text>
           {shoppingList.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyStateIcon}>🛒</Text>
-              <Text style={styles.emptyStateText}>Nothing out of stock!</Text>
-            </View>
+            <View style={styles.emptyState}><Text style={styles.emptyStateIcon}>🛒</Text><Text style={styles.emptyStateText}>Nothing out of stock!</Text></View>
           ) : (
             <>
               {Object.values(checkedItems).some(v => v) && (
-                <TouchableOpacity
-                  style={styles.doneShoppingBtn}
-                  onPress={async () => {
-                    const checkedIds = Object.keys(checkedItems).filter(id => checkedItems[id]);
-                    for (const id of checkedIds) {
-                      const qty = parseInt(restockQuantities[id]) || 1;
-                      const item = inventory.find(i => i.id === id);
-                      if (!item) continue;
-                      const newQty = parseInt(item.quantity) + qty;
-                      await supabase.from('inventory').update({ quantity: newQty.toString() }).eq('id', id);
-                      setInventory(prev => prev.map(i => i.id === id ? { ...i, quantity: newQty.toString() } : i));
-                    }
-                    setCheckedItems({});
-                    setRestockQuantities({});
-                  }}
-                >
+                <TouchableOpacity style={styles.doneShoppingBtn} onPress={async () => {
+                  const checkedIds = Object.keys(checkedItems).filter(id => checkedItems[id]);
+                  for (const id of checkedIds) {
+                    const qty = parseInt(restockQuantities[id]) || 1;
+                    const item = inventory.find(i => i.id === id);
+                    if (!item) continue;
+                    const newQty = parseInt(item.quantity) + qty;
+                    await supabase.from('inventory').update({ quantity: newQty.toString() }).eq('id', id);
+                    setInventory(prev => prev.map(i => i.id === id ? { ...i, quantity: newQty.toString() } : i));
+                  }
+                  setCheckedItems({}); setRestockQuantities({});
+                }}>
                   <Ionicons name="checkmark-circle" size={20} color="white" />
-                  <Text style={styles.doneShoppingText}>
-                    Done Shopping ({Object.values(checkedItems).filter(v => v).length} items)
-                  </Text>
+                  <Text style={styles.doneShoppingText}>Done Shopping ({Object.values(checkedItems).filter(v => v).length} items)</Text>
                 </TouchableOpacity>
               )}
+              {/* Shopping list grouped by MAIN parent category */}
               <FlatList
-                data={CATEGORIES.filter(cat => shoppingList.some(item => item.category === cat.value))}
-                keyExtractor={cat => cat.value}
+                data={shoppingListParents} keyExtractor={cat => cat.value}
                 renderItem={({ item: cat }) => (
                   <View>
                     <View style={[styles.shoppingCategoryHeader, { borderLeftColor: cat.color }]}>
                       <Text style={[styles.shoppingCategoryLabel, { color: cat.color }]}>{cat.label}</Text>
-                      <Text style={styles.shoppingCategoryCount}>
-                        {shoppingList.filter(i => i.category === cat.value).length} items
-                      </Text>
+                      <Text style={styles.shoppingCategoryCount}>{shoppingList.filter(i => getParentCategory(i.category) === cat.value).length} items</Text>
                     </View>
-                    {shoppingList.filter(item => item.category === cat.value).map(item => (
-                      <TouchableOpacity
-                        key={item.id}
-                        style={[styles.shoppingItem, checkedItems[item.id] && styles.shoppingItemChecked]}
-                        onPress={() => setCheckedItems(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
-                      >
+                    {shoppingList.filter(item => getParentCategory(item.category) === cat.value).map(item => (
+                      <TouchableOpacity key={item.id} style={[styles.shoppingItem, checkedItems[item.id] && styles.shoppingItemChecked]} onPress={() => setCheckedItems(prev => ({ ...prev, [item.id]: !prev[item.id] }))}>
                         <View style={[styles.checkbox, checkedItems[item.id] && styles.checkboxChecked]}>
                           {checkedItems[item.id] && <Ionicons name="checkmark" size={14} color="white" />}
                         </View>
-                        {item.image ? (
-                          <Image source={{ uri: item.image }} style={styles.itemImage} />
-                        ) : (
-                          <View style={styles.itemImagePlaceholder} />
-                        )}
-                        <Text style={[styles.shoppingItemName, checkedItems[item.id] && styles.shoppingItemNameChecked]} numberOfLines={2}>
-                          {item.name}
-                        </Text>
+                        {item.image ? <Image source={{ uri: item.image }} style={styles.itemImage} /> : <View style={styles.itemImagePlaceholder} />}
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.shoppingItemName, checkedItems[item.id] && styles.shoppingItemNameChecked]} numberOfLines={2}>{item.name}</Text>
+                          <Text style={{ fontSize: 11, color: getCategoryColor(item.category), marginTop: 2 }}>{getCategoryLabel(item.category)}</Text>
+                        </View>
                         <View style={styles.restockQtyRow}>
                           <Text style={styles.restockQtyLabel}>Qty</Text>
-                          <TextInput
-                            style={styles.restockQtyInput}
-                            value={restockQuantities[item.id] || '1'}
-                            onChangeText={(val) => setRestockQuantities(prev => ({ ...prev, [item.id]: val }))}
-                            keyboardType="numeric"
-                          />
+                          <TextInput style={styles.restockQtyInput} value={restockQuantities[item.id] || '1'} onChangeText={(val) => setRestockQuantities(prev => ({ ...prev, [item.id]: val }))} keyboardType="numeric" />
                         </View>
                       </TouchableOpacity>
                     ))}
@@ -1109,33 +905,17 @@ export default function App() {
         <ScrollView style={styles.screen}>
           <Text style={styles.title}>Profile</Text>
           <View style={styles.profileCard}>
-            {/* Tappable avatar — shows photo if set, icon if not */}
             <TouchableOpacity onPress={uploadAvatar} style={styles.avatarContainer}>
-              {uploadingAvatar ? (
-                <View style={styles.avatarPlaceholder}>
-                  <ActivityIndicator color="#27ae60" />
-                </View>
-              ) : profileAvatar ? (
-                <Image source={{ uri: profileAvatar }} style={styles.avatarImage} />
-              ) : (
-                <View style={styles.avatarPlaceholder}>
-                  <Ionicons name="person-circle-outline" size={60} color="#2c3e50" />
-                </View>
-              )}
-              <View style={styles.avatarEditBadge}>
-                <Ionicons name="camera-outline" size={14} color="white" />
-              </View>
+              {uploadingAvatar ? <View style={styles.avatarPlaceholder}><ActivityIndicator color="#27ae60" /></View>
+                : profileAvatar ? <Image source={{ uri: profileAvatar }} style={styles.avatarImage} />
+                : <View style={styles.avatarPlaceholder}><Ionicons name="person-circle-outline" size={60} color="#2c3e50" /></View>}
+              <View style={styles.avatarEditBadge}><Ionicons name="camera-outline" size={14} color="white" /></View>
             </TouchableOpacity>
             <Text style={styles.profileEmail}>{user.email}</Text>
             {editingName ? (
               <View style={styles.editNameRow}>
-                <TextInput
-                  style={styles.editNameInput} value={newName} onChangeText={setNewName}
-                  placeholder="Enter your name" placeholderTextColor="#999" autoFocus
-                />
-                <TouchableOpacity style={styles.saveNameBtn} onPress={saveName}>
-                  <Text style={styles.saveNameBtnText}>Save</Text>
-                </TouchableOpacity>
+                <TextInput style={styles.editNameInput} value={newName} onChangeText={setNewName} placeholder="Enter your name" placeholderTextColor="#999" autoFocus />
+                <TouchableOpacity style={styles.saveNameBtn} onPress={saveName}><Text style={styles.saveNameBtnText}>Save</Text></TouchableOpacity>
               </View>
             ) : (
               <TouchableOpacity onPress={() => { setNewName(profileName); setEditingName(true); }}>
@@ -1148,12 +928,8 @@ export default function App() {
             <View style={styles.codeRow}>
               <Text style={styles.codeLabel}>Join Code</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <View style={styles.codeBadge}>
-                  <Text style={styles.codeText}>{householdCode}</Text>
-                </View>
-                <TouchableOpacity onPress={shareHouseholdCode} style={styles.shareBtn}>
-                  <Ionicons name="share-outline" size={20} color="#27ae60" />
-                </TouchableOpacity>
+                <View style={styles.codeBadge}><Text style={styles.codeText}>{householdCode}</Text></View>
+                <TouchableOpacity onPress={shareHouseholdCode} style={styles.shareBtn}><Ionicons name="share-outline" size={20} color="#27ae60" /></TouchableOpacity>
               </View>
             </View>
             <Text style={styles.codeHint}>Share this code with household members</Text>
@@ -1162,107 +938,50 @@ export default function App() {
           <View style={styles.profileCard}>
             {householdMembers.map((member, index) => (
               <View key={member.user_id} style={[styles.memberRow, index < householdMembers.length - 1 && styles.memberRowBorder]}>
-                {member.avatar_url ? (
-                  <Image source={{ uri: member.avatar_url }} style={styles.memberAvatar} />
-                ) : (
-                  <Ionicons name="person-circle-outline" size={36} color="#2c3e50" />
-                )}
+                {member.avatar_url
+                  ? <TouchableOpacity onPress={() => setEnlargedAvatar(member.avatar_url)}><Image source={{ uri: member.avatar_url }} style={styles.memberAvatar} /></TouchableOpacity>
+                  : <Ionicons name="person-circle-outline" size={36} color="#2c3e50" />}
                 <View style={styles.memberInfo}>
                   <Text style={styles.memberName}>{member.full_name || 'Unknown'}</Text>
                   <Text style={styles.memberJoined}>Joined {new Date(member.joined_at).toLocaleDateString()}</Text>
                 </View>
-                {member.user_id === user.id && (
-                  <View style={styles.youBadge}><Text style={styles.youBadgeText}>You</Text></View>
-                )}
+                {member.user_id === user.id && <View style={styles.youBadge}><Text style={styles.youBadgeText}>You</Text></View>}
               </View>
             ))}
           </View>
-          <TouchableOpacity
-            style={styles.logoutBtn}
-            onPress={() => {
-              Alert.alert('Log Out', 'Are you sure you want to log out?', [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Log Out', style: 'destructive',
-                  onPress: async () => {
-                    await supabase.auth.signOut();
-                    setHouseholdId(null); setInventory([]);
-                    setHouseholdMembers([]); setHouseholdCode(''); setActiveTab('inventory');
-                  }
-                }
-              ]);
-            }}
-          >
+          <TouchableOpacity style={styles.logoutBtn} onPress={() => {
+            Alert.alert('Log Out', 'Are you sure you want to log out?', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Log Out', style: 'destructive', onPress: async () => { await supabase.auth.signOut(); setHouseholdId(null); setInventory([]); setHouseholdMembers([]); setHouseholdCode(''); setActiveTab('inventory'); } }
+            ]);
+          }}>
             <Text style={styles.logoutBtnText}>Log Out</Text>
           </TouchableOpacity>
           <View style={{ height: 40 }} />
         </ScrollView>
       )}
 
-      {/* ── ITEM DETAIL MODAL ──────────────────────────────────────────────
-          Opens when user taps anywhere on a card.
-          Shows enlarged image + product info + Edit and Close buttons.
-          Edit button closes this modal and opens the edit form modal. */}
+      {/* ── ITEM DETAIL MODAL ── */}
       <Modal visible={!!selectedItem} transparent animationType="fade" onRequestClose={() => setSelectedItem(null)}>
         <TouchableOpacity style={styles.imageModalBackdrop} activeOpacity={1} onPress={() => setSelectedItem(null)}>
           <View style={styles.imageModalCard}>
-            {/* Large image or placeholder */}
-            {selectedItem?.image ? (
-              <Image source={{ uri: selectedItem.image }} style={styles.imageModalImage} resizeMode="contain" />
-            ) : (
-              <View style={styles.imageModalPlaceholder}>
-                <Ionicons name="image-outline" size={60} color="#ddd" />
-              </View>
-            )}
-
-            {/* Product name */}
+            {selectedItem?.image ? <Image source={{ uri: selectedItem.image }} style={styles.imageModalImage} resizeMode="contain" /> : <View style={styles.imageModalPlaceholder}><Ionicons name="image-outline" size={60} color="#ddd" /></View>}
             <Text style={styles.imageModalName}>{selectedItem?.name}</Text>
-
-            {/* Category badge */}
             <View style={[styles.categoryTag, { backgroundColor: getCategoryColor(selectedItem?.category), alignSelf: 'center', marginBottom: 12 }]}>
-              <Text style={styles.categoryTagText}>
-                {CATEGORIES.find(c => c.value === selectedItem?.category)?.label || 'Other'}
-              </Text>
+              <Text style={styles.categoryTagText}>{getCategoryLabel(selectedItem?.category)}</Text>
             </View>
-
-            {/* Info rows */}
-            <View style={styles.imageModalInfoRow}>
-              <Text style={styles.imageModalLabel}>Quantity</Text>
-              <Text style={styles.imageModalValue}>{selectedItem?.quantity}</Text>
-            </View>
-            {selectedItem?.expiration_date && (
-              <View style={styles.imageModalInfoRow}>
-                <Text style={styles.imageModalLabel}>Expires</Text>
-                <Text style={styles.imageModalValue}>{selectedItem.expiration_date}</Text>
-              </View>
-            )}
-            {selectedItem?.barcode && (
-              <View style={styles.imageModalInfoRow}>
-                <Text style={styles.imageModalLabel}>Barcode</Text>
-                <Text style={styles.imageModalValue}>{selectedItem.barcode}</Text>
-              </View>
-            )}
-
-            {/* Close + Edit buttons */}
+            <View style={styles.imageModalInfoRow}><Text style={styles.imageModalLabel}>Quantity</Text><Text style={styles.imageModalValue}>{selectedItem?.quantity}</Text></View>
+            {selectedItem?.expiration_date && <View style={styles.imageModalInfoRow}><Text style={styles.imageModalLabel}>Expires</Text><Text style={styles.imageModalValue}>{selectedItem.expiration_date}</Text></View>}
+            {selectedItem?.barcode && <View style={styles.imageModalInfoRow}><Text style={styles.imageModalLabel}>Barcode</Text><Text style={styles.imageModalValue}>{selectedItem.barcode}</Text></View>}
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 16, width: '100%' }}>
-              <TouchableOpacity
-                style={[styles.imageModalClose, { backgroundColor: '#f0f0f0', flex: 1 }]}
-                onPress={() => setSelectedItem(null)}
-              >
+              <TouchableOpacity style={[styles.imageModalClose, { backgroundColor: '#f0f0f0', flex: 1 }]} onPress={() => setSelectedItem(null)}>
                 <Text style={[styles.imageModalCloseText, { color: '#555' }]}>Close</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.imageModalClose, { flex: 1 }]}
-                onPress={() => {
-                  // Close detail modal, open edit modal
-                  const item = selectedItem;
-                  setSelectedItem(null);
-                  setEditingItem(item);
-                  setEditName(item.name);
-                  setEditCategory(item.category);
-                  setEditThreshold(item.low_stock_threshold != null ? item.low_stock_threshold.toString() : '2');
-                }}
-              >
+              <TouchableOpacity style={[styles.imageModalClose, { flex: 1 }]} onPress={() => {
+                const item = selectedItem; setSelectedItem(null);
+                setEditingItem(item); setEditName(item.name); setEditCategory(item.category);
+                setEditThreshold(item.low_stock_threshold != null ? item.low_stock_threshold.toString() : '2');
+              }}>
                 <Text style={styles.imageModalCloseText}>Edit</Text>
               </TouchableOpacity>
             </View>
@@ -1270,48 +989,28 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
-      {/* ── EDIT ITEM MODAL ────────────────────────────────────────────────
-          Opens from the Edit button inside the detail modal.
-          Lets user change name and category, saves to Supabase. */}
+      {/* ── EDIT ITEM MODAL ── */}
       <Modal visible={!!editingItem} transparent animationType="fade" onRequestClose={() => setEditingItem(null)}>
-        <View style={styles.editModal}>
+        <ScrollView contentContainerStyle={styles.editModalBackdrop}>
           <View style={styles.editModalCard}>
             <Text style={styles.editModalTitle}>Edit Item</Text>
-            <TextInput
-              style={styles.formInput} value={editName} onChangeText={setEditName}
-              placeholder="Product name" placeholderTextColor="#999" autoFocus
-            />
+            <TextInput style={styles.formInput} value={editName} onChangeText={setEditName} placeholder="Product name" placeholderTextColor="#999" autoFocus />
             <Text style={[styles.formLabel, { marginTop: 12 }]}>Category</Text>
-            <View style={styles.categoryRow}>
-              {CATEGORIES.map(cat => (
-                <TouchableOpacity
-                  key={cat.value}
-                  style={[styles.categoryBtn, { backgroundColor: editCategory === cat.value ? cat.color : '#ddd' }]}
-                  onPress={() => setEditCategory(cat.value)}
-                >
-                  <Text style={[styles.categoryBtnText, { color: editCategory === cat.value ? 'white' : '#555' }]}>
-                    {cat.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <CategorySelector selected={editCategory} onSelect={setEditCategory} />
             <Text style={[styles.formLabel, { marginTop: 12 }]}>Low Stock Alert</Text>
-            <TextInput
-              style={[styles.formInput, { width: 80 }]}
-              value={editThreshold}
-              onChangeText={setEditThreshold}
-              placeholder="2"
-              placeholderTextColor="#999"
-              keyboardType="numeric"
-            />
-            <TouchableOpacity style={styles.confirmBtn} onPress={saveItemEdit}>
-              <Text style={styles.confirmBtnText}>Save Changes</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelFormBtn} onPress={() => setEditingItem(null)}>
-              <Text style={styles.cancelFormBtnText}>Cancel</Text>
-            </TouchableOpacity>
+            <TextInput style={[styles.formInput, { width: 80 }]} value={editThreshold} onChangeText={setEditThreshold} placeholder="2" placeholderTextColor="#999" keyboardType="numeric" />
+            <TouchableOpacity style={styles.confirmBtn} onPress={saveItemEdit}><Text style={styles.confirmBtnText}>Save Changes</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.cancelFormBtn} onPress={() => setEditingItem(null)}><Text style={styles.cancelFormBtnText}>Cancel</Text></TouchableOpacity>
           </View>
-        </View>
+        </ScrollView>
+      </Modal>
+
+      {/* ── ENLARGED AVATAR MODAL ── */}
+      <Modal visible={!!enlargedAvatar} transparent animationType="fade" onRequestClose={() => setEnlargedAvatar(null)}>
+        <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' }} activeOpacity={1} onPress={() => setEnlargedAvatar(null)}>
+          <Image source={{ uri: enlargedAvatar }} style={{ width: 280, height: 280, borderRadius: 140 }} resizeMode="cover" />
+          <Text style={{ color: 'white', marginTop: 16, fontSize: 14, opacity: 0.7 }}>Tap to close</Text>
+        </TouchableOpacity>
       </Modal>
 
       {/* ── BOTTOM TAB BAR ── */}
@@ -1320,28 +1019,18 @@ export default function App() {
           <Ionicons name={activeTab === 'inventory' ? 'grid' : 'grid-outline'} size={24} color={activeTab === 'inventory' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'inventory' && styles.tabLabelActive]}>Inventory</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.tabItem} onPress={() => {
-          setProductName(''); setQuantity('1'); setProductImage(null);
-          setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate('');
-          setActiveTab('add');
-        }}>
+        <TouchableOpacity style={styles.tabItem} onPress={() => { setProductName(''); setQuantity('1'); setProductImage(null); setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setActiveTab('add'); }}>
           <Ionicons name={activeTab === 'add' ? 'add-circle' : 'add-circle-outline'} size={24} color={activeTab === 'add' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'add' && styles.tabLabelActive]}>Add</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('scan')}>
-          <View style={styles.scanTabBtn}>
-            <Ionicons name="barcode-outline" size={28} color="white" />
-          </View>
+          <View style={styles.scanTabBtn}><Ionicons name="barcode-outline" size={28} color="white" /></View>
           <Text style={[styles.tabLabel, activeTab === 'scan' && styles.tabLabelActive]}>Scan</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('shopping')}>
           <View>
             <Ionicons name={activeTab === 'shopping' ? 'cart' : 'cart-outline'} size={24} color={activeTab === 'shopping' ? '#27ae60' : '#999'} />
-            {shoppingList.length > 0 && (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>{shoppingList.length}</Text>
-              </View>
-            )}
+            {shoppingList.length > 0 && <View style={styles.badge}><Text style={styles.badgeText}>{shoppingList.length}</Text></View>}
           </View>
           <Text style={[styles.tabLabel, activeTab === 'shopping' && styles.tabLabelActive]}>Shopping</Text>
         </TouchableOpacity>
@@ -1414,9 +1103,9 @@ const styles = StyleSheet.create({
   imgBtnText: { color: 'white', fontSize: 13 },
   formLabel: { fontSize: 14, fontWeight: 'bold', color: '#2c3e50', marginBottom: 6, marginTop: 12 },
   formInput: { backgroundColor: 'white', padding: 12, borderRadius: 8, fontSize: 15, color: '#333' },
-  categoryRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
-  categoryBtn: { flex: 1, padding: 10, borderRadius: 8, alignItems: 'center' },
-  categoryBtnText: { fontSize: 12, fontWeight: 'bold' },
+  // Category buttons — fixed width + single line, used in horizontal ScrollView
+  categoryBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, alignItems: 'center', justifyContent: 'center', minWidth: 80 },
+  categoryBtnText: { fontSize: 12, fontWeight: 'bold', textAlign: 'center' },
   confirmBtn: { backgroundColor: '#27ae60', padding: 16, borderRadius: 10, alignItems: 'center', marginTop: 24 },
   confirmBtnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   cancelFormBtn: { padding: 14, alignItems: 'center', marginTop: 8 },
@@ -1428,7 +1117,7 @@ const styles = StyleSheet.create({
   shoppingCategoryCount: { fontSize: 12, color: '#999' },
   shoppingItem: { backgroundColor: 'white', padding: 12, borderRadius: 8, marginBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   shoppingItemChecked: { backgroundColor: '#f0f9f4', borderWidth: 1, borderColor: '#27ae60', opacity: 0.7 },
-  shoppingItemName: { flex: 1, fontSize: 13, color: '#2c3e50' },
+  shoppingItemName: { fontSize: 13, color: '#2c3e50' },
   shoppingItemNameChecked: { textDecorationLine: 'line-through', color: '#999' },
   checkbox: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: '#ddd', justifyContent: 'center', alignItems: 'center' },
   checkboxChecked: { backgroundColor: '#27ae60', borderColor: '#27ae60' },
@@ -1474,7 +1163,6 @@ const styles = StyleSheet.create({
   saveNameBtn: { backgroundColor: '#27ae60', padding: 10, borderRadius: 8 },
   saveNameBtnText: { color: 'white', fontWeight: 'bold' },
   editNameLink: { color: '#27ae60', fontSize: 15, marginTop: 8, fontWeight: 'bold' },
-  // Item Detail Modal
   imageModalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
   imageModalCard: { backgroundColor: 'white', borderRadius: 20, padding: 24, width: '88%', alignItems: 'center' },
   imageModalImage: { width: 220, height: 220, borderRadius: 12, marginBottom: 16 },
@@ -1485,9 +1173,8 @@ const styles = StyleSheet.create({
   imageModalValue: { fontSize: 14, fontWeight: 'bold', color: '#2c3e50' },
   imageModalClose: { backgroundColor: '#2c3e50', paddingHorizontal: 32, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   imageModalCloseText: { color: 'white', fontWeight: 'bold', fontSize: 15 },
-  // Edit Item Modal
-  editModal: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  editModalCard: { backgroundColor: 'white', borderRadius: 16, padding: 24, width: '90%' },
+  editModalBackdrop: { flexGrow: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  editModalCard: { backgroundColor: 'white', borderRadius: 16, padding: 24, width: '100%' },
   editModalTitle: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50', marginBottom: 12 },
   avatarContainer: { position: 'relative', alignSelf: 'center', marginBottom: 4 },
   avatarImage: { width: 80, height: 80, borderRadius: 40 },
