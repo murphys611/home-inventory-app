@@ -392,7 +392,10 @@ export default function App() {
       expiration_date: expirationDate.trim() || null,
       low_stock_threshold: lowStockThreshold ? parseInt(lowStockThreshold) : null,
     };
-    if (currentBarcode) saveToLocalCache(currentBarcode, productName, selectedCategory, productImage);
+    if (currentBarcode) {
+      saveToLocalCache(currentBarcode, productName, selectedCategory, productImage);
+      saveToSharedBarcodeCache(currentBarcode, productName, selectedCategory, productImage);
+    }
     try {
       const { error } = await supabase.from('inventory').insert([newItem]);
       if (error) throw error;
@@ -456,6 +459,63 @@ export default function App() {
     }
   };
 
+  // Checks Supabase shared barcode cache — available to all users globally
+  const checkSharedBarcodeCache = async (barcode) => {
+    try {
+      const { data } = await supabase
+        .from('barcode_cache')
+        .select('name, category, image_url')
+        .eq('barcode', barcode)
+        .single();
+      return data || null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // Saves barcode info to Supabase shared cache.
+  // If a local image URI is provided, uploads it to Storage first.
+  const saveToSharedBarcodeCache = async (barcode, name, category, imageUri) => {
+    try {
+      let imageUrl = null;
+
+      // Upload image to barcode-images bucket if user provided one
+      if (imageUri && imageUri.startsWith('file')) {
+        const response = await fetch(imageUri);
+        const blob = await response.blob();
+        const reader = new FileReader();
+        reader.readAsArrayBuffer(blob);
+        await new Promise((resolve) => { reader.onloadend = resolve; });
+        const arrayBuffer = reader.result;
+        const filePath = `${barcode}.jpg`;
+        const { error: uploadError } = await supabase.storage
+          .from('barcode-images')
+          .upload(filePath, arrayBuffer, { contentType: 'image/jpeg', upsert: true });
+        if (!uploadError) {
+          const { data: { publicUrl } } = supabase.storage
+            .from('barcode-images')
+            .getPublicUrl(filePath);
+          imageUrl = publicUrl;
+        }
+      } else if (imageUri && imageUri.startsWith('http')) {
+        // Already a remote URL (from Open Food Facts / UPC Item DB) — store directly
+        imageUrl = imageUri;
+      }
+
+      // Upsert to shared cache — skip if barcode already exists
+      await supabase.from('barcode_cache').upsert([{
+        barcode,
+        name,
+        category,
+        image_url: imageUrl,
+        created_by: user.id,
+      }], { onConflict: 'barcode', ignoreDuplicates: true });
+
+    } catch (e) {
+      console.log('Failed to save to shared cache', e);
+    }
+  };
+
   // ─── BARCODE SCANNING ───────────────────────────────────────────────────
 
   const handleBarcode = ({ data }) => {
@@ -470,6 +530,25 @@ export default function App() {
 
   const lookupProduct = async (barcode) => {
     setCurrentBarcode(barcode);
+
+    // 1. Check shared Supabase cache first — covers barcodes added by any user
+    const sharedCached = await checkSharedBarcodeCache(barcode);
+    if (sharedCached) {
+      const existing = inventory.find(item => item.barcode === barcode);
+      if (existing) {
+        await changeQuantity(existing.id, 1);
+        setScanStatus(`✓ Updated: ${sharedCached.name} is now x${parseInt(existing.quantity) + 1}`);
+        setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
+      } else {
+        setProductName(sharedCached.name);
+        setProductImage(sharedCached.image_url);
+        setSelectedCategory(sharedCached.category);
+        setScanStatus(''); setActiveTab('add');
+      }
+      return;
+    }
+
+    // 2. Check local device cache
     const cached = await checkLocalCache(barcode);
     if (cached) {
       const existing = inventory.find(item => item.barcode === barcode);
