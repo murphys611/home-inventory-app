@@ -48,10 +48,7 @@ export default function AuthScreen() {
     }
   };
 
-  // Sends a password reset email via Supabase.
-  // redirectTo points to the app's custom URL scheme so the link opens the app
-  // instead of a browser. Requires "scheme" in app.json and the URL added to
-  // Supabase Dashboard → Authentication → URL Configuration → Redirect URLs.
+  // Sends a password reset email via Supabase
   const handleForgotPassword = async () => {
     if (!resetEmail.trim()) {
       Alert.alert('Please enter your email address.');
@@ -59,9 +56,7 @@ export default function AuthScreen() {
     }
     setLoading(true);
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(resetEmail.trim(), {
-        redirectTo: 'homeinventory://reset-password',
-      });
+      const { error } = await supabase.auth.resetPasswordForEmail(resetEmail.trim());
       if (error) throw error;
       setResetSent(true);
     } catch (e) {

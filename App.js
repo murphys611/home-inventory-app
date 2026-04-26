@@ -73,6 +73,7 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState('food');
   const [scanStatus, setScanStatus] = useState('');
   const [expirationDate, setExpirationDate] = useState('');
+  const [lowStockThreshold, setLowStockThreshold] = useState('2'); // Per-item alert threshold
 
   // ── Shopping List State ─────────────────────────────────────────────────
   const [checkedItems, setCheckedItems] = useState({});
@@ -92,10 +93,15 @@ export default function App() {
   const [editingItem, setEditingItem] = useState(null);
   const [editName, setEditName] = useState('');
   const [editCategory, setEditCategory] = useState('');
-
+  const [editThreshold, setEditThreshold] = useState('');
+  
   // ── Refs ────────────────────────────────────────────────────────────────
   const scanned = useRef(false);
   const cameraReady = useRef(false);
+
+  //Avatar State
+  const [profileAvatar, setProfileAvatar] = useState(null); // Current user's avatar URL
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   // ─── DEEP LINK HANDLER ─────────────────────────────────────────────────
   useEffect(() => {
@@ -200,16 +206,20 @@ export default function App() {
           .from('households').select('code').eq('id', data.household_id).single();
         if (household) setHouseholdCode(household.code);
         const { data: myProfile } = await supabase
-          .from('profiles').select('full_name').eq('id', user.id).single();
-        if (myProfile) setProfileName(myProfile.full_name || '');
+          .from('profiles').select('full_name, avatar_url').eq('id', user.id).single();
+        if (myProfile) {
+          setProfileName(myProfile.full_name || '');
+          setProfileAvatar(myProfile.avatar_url || null);
+        }
         const { data: members } = await supabase
           .from('household_members').select('user_id, joined_at').eq('household_id', data.household_id);
         if (members) {
           const { data: profiles } = await supabase
-            .from('profiles').select('id, full_name').in('id', members.map(m => m.user_id));
+            .from('profiles').select('id, full_name, avatar_url').in('id', members.map(m => m.user_id));
           setHouseholdMembers(members.map(member => ({
             ...member,
-            full_name: profiles?.find(p => p.id === member.user_id)?.full_name || 'Unknown'
+            full_name: profiles?.find(p => p.id === member.user_id)?.full_name || 'Unknown',
+            avatar_url: profiles?.find(p => p.id === member.user_id)?.avatar_url || null,
           })));
         }
       }
@@ -242,11 +252,11 @@ export default function App() {
     }
     try {
       const { error } = await supabase.from('inventory')
-        .update({ name: editName, category: editCategory })
+        .update({ name: editName, category: editCategory, low_stock_threshold: editThreshold ? parseInt(editThreshold) : null })
         .eq('id', editingItem.id);
       if (error) throw error;
       setInventory(prev => prev.map(i =>
-        i.id === editingItem.id ? { ...i, name: editName, category: editCategory } : i
+        i.id === editingItem.id ? { ...i, name: editName, category: editCategory, low_stock_threshold: editThreshold ? parseInt(editThreshold) : null } : i
       ));
       setEditingItem(null);
     } catch (e) {
@@ -262,6 +272,72 @@ export default function App() {
       });
     } catch (e) {
       Alert.alert('Could not open share sheet.');
+    }
+  };
+
+  // Lets user pick a photo from camera, camera roll, or files and uploads to Supabase Storage
+  const uploadAvatar = () => {
+    Alert.alert('Profile Picture', 'Choose a source', [
+      {
+        text: 'Take Photo',
+        onPress: async () => {
+          const result = await ImagePicker.launchCameraAsync({
+            allowsEditing: true, aspect: [1, 1], quality: 0.7,
+          });
+          if (!result.canceled) processAvatarUpload(result.assets[0].uri);
+        }
+      },
+      {
+        text: 'Choose from Library',
+        onPress: async () => {
+          const result = await ImagePicker.launchImageLibraryAsync({
+            allowsEditing: true, aspect: [1, 1], quality: 0.7,
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          });
+          if (!result.canceled) processAvatarUpload(result.assets[0].uri);
+        }
+      },
+      { text: 'Cancel', style: 'cancel' }
+    ]);
+  };
+
+  const processAvatarUpload = async (uri) => {
+    setUploadingAvatar(true);
+    try {
+      // Read the file as base64
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const reader = new FileReader();
+      reader.readAsArrayBuffer(blob);
+      await new Promise((resolve) => { reader.onloadend = resolve; });
+      const arrayBuffer = reader.result;
+
+      const filePath = `${user.id}.jpg`;
+
+      // Upload to Supabase Storage avatars bucket
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, arrayBuffer, {
+          contentType: 'image/jpeg',
+          upsert: true, // Overwrite if already exists
+        });
+      if (uploadError) throw uploadError;
+
+      // Get the public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(filePath);
+
+      // Save URL to profiles table
+      await supabase.from('profiles')
+        .update({ avatar_url: publicUrl })
+        .eq('id', user.id);
+
+      setProfileAvatar(publicUrl + '?t=' + Date.now()); // Cache bust
+    } catch (e) {
+      Alert.alert('Upload failed', e.message);
+    } finally {
+      setUploadingAvatar(false);
     }
   };
 
@@ -314,6 +390,7 @@ export default function App() {
       category: selectedCategory,
       household_id: householdId,
       expiration_date: expirationDate.trim() || null,
+      low_stock_threshold: lowStockThreshold ? parseInt(lowStockThreshold) : null,
     };
     if (currentBarcode) saveToLocalCache(currentBarcode, productName, selectedCategory, productImage);
     try {
@@ -321,7 +398,7 @@ export default function App() {
       if (error) throw error;
       setInventory(prev => [...prev, newItem]);
       setProductName(''); setQuantity('1'); setProductImage(null);
-      setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate('');
+      setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setLowStockThreshold('2');
       setActiveTab('inventory');
     } catch (e) {
       Alert.alert('Failed to add item: ' + JSON.stringify(e));
@@ -342,7 +419,8 @@ export default function App() {
     const item = inventory.find(i => i.id === id);
     if (!item) return;
     const newQty = Math.max(0, parseInt(item.quantity) + delta);
-    if (newQty === LOW_STOCK_THRESHOLD || newQty === 0) {
+    const threshold = item.low_stock_threshold != null ? item.low_stock_threshold : LOW_STOCK_THRESHOLD;
+    if (newQty === threshold || newQty === 0) {
       sendLowStockNotification(item.name, newQty);
     }
     try {
@@ -525,7 +603,11 @@ export default function App() {
     return cat ? cat.color : '#7f8c8d';
   };
 
-  const isLowStock = (qty) => parseInt(qty) <= LOW_STOCK_THRESHOLD;
+  // Uses per-item threshold if set, otherwise falls back to the global constant
+  const isLowStock = (qty, item) => {
+    const threshold = item?.low_stock_threshold != null ? item.low_stock_threshold : LOW_STOCK_THRESHOLD;
+    return parseInt(qty) <= threshold;
+  };
 
   const getFilteredAndSorted = () => {
     let result = [...inventory];
@@ -682,15 +764,15 @@ export default function App() {
               data={getFilteredAndSorted()}
               keyExtractor={item => item.id}
               renderItem={({ item }) => (
-                <View style={[styles.compactItem, isLowStock(item.quantity) && styles.itemLowStock]}>
+                <View style={[styles.compactItem, isLowStock(item.quantity, item) && styles.itemLowStock]}>
                   <View style={[styles.compactDot, { backgroundColor: getCategoryColor(item.category) }]} />
                   <Text style={styles.compactName} numberOfLines={1}>{item.name}</Text>
-                  {isLowStock(item.quantity) && <Text style={styles.compactLowStock}>⚠️</Text>}
+                  {isLowStock(item.quantity, item) && <Text style={styles.compactLowStock}>⚠️</Text>}
                   <View style={styles.qtyControls}>
                     <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, -1)}>
                       <Text style={styles.qtyBtnText}>−</Text>
                     </TouchableOpacity>
-                    <Text style={[styles.qtyNumber, isLowStock(item.quantity) && styles.qtyLow]}>
+                    <Text style={[styles.qtyNumber, isLowStock(item.quantity, item) && styles.qtyLow]}>
                       {item.quantity}
                     </Text>
                     <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, 1)}>
@@ -712,7 +794,7 @@ export default function App() {
               keyExtractor={item => item.id}
               renderItem={({ item }) => (
                 <TouchableOpacity
-                  style={[styles.item, isLowStock(item.quantity) && styles.itemLowStock]}
+                  style={[styles.item, isLowStock(item.quantity, item) && styles.itemLowStock]}
                   onPress={() => setSelectedItem(item)}
                   activeOpacity={0.75}
                 >
@@ -734,7 +816,7 @@ export default function App() {
                           {CATEGORIES.find(c => c.value === item.category)?.label || 'Other'}
                         </Text>
                       </View>
-                      {isLowStock(item.quantity) && (
+                      {isLowStock(item.quantity, item) && (
                         <View style={styles.lowStockTag}>
                           <Text style={styles.lowStockTagText}>
                             {parseInt(item.quantity) === 0 ? '⚠️ Out' : '⚠️ Low'}
@@ -763,7 +845,7 @@ export default function App() {
                     <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, -1); }}>
                       <Text style={styles.qtyBtnText}>−</Text>
                     </TouchableOpacity>
-                    <Text style={[styles.qtyNumber, isLowStock(item.quantity) && styles.qtyLow]}>
+                    <Text style={[styles.qtyNumber, isLowStock(item.quantity, item) && styles.qtyLow]}>
                       {item.quantity}
                     </Text>
                     <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, 1); }}>
@@ -838,6 +920,17 @@ export default function App() {
               />
             </>
           )}
+          <Text style={styles.formLabel}>
+            Low Stock Alert <Text style={{ color: '#999', fontWeight: 'normal' }}>(alert when qty reaches this)</Text>
+          </Text>
+          <TextInput
+            style={[styles.formInput, { width: 80 }]}
+            placeholder="2"
+            placeholderTextColor="#999"
+            value={lowStockThreshold}
+            onChangeText={setLowStockThreshold}
+            keyboardType="numeric"
+          />
           <TouchableOpacity style={styles.confirmBtn} onPress={addItem}>
             <Text style={styles.confirmBtnText}>Add to Inventory</Text>
           </TouchableOpacity>
@@ -937,7 +1030,23 @@ export default function App() {
         <ScrollView style={styles.screen}>
           <Text style={styles.title}>Profile</Text>
           <View style={styles.profileCard}>
-            <Ionicons name="person-circle-outline" size={60} color="#2c3e50" />
+            {/* Tappable avatar — shows photo if set, icon if not */}
+            <TouchableOpacity onPress={uploadAvatar} style={styles.avatarContainer}>
+              {uploadingAvatar ? (
+                <View style={styles.avatarPlaceholder}>
+                  <ActivityIndicator color="#27ae60" />
+                </View>
+              ) : profileAvatar ? (
+                <Image source={{ uri: profileAvatar }} style={styles.avatarImage} />
+              ) : (
+                <View style={styles.avatarPlaceholder}>
+                  <Ionicons name="person-circle-outline" size={60} color="#2c3e50" />
+                </View>
+              )}
+              <View style={styles.avatarEditBadge}>
+                <Ionicons name="camera-outline" size={14} color="white" />
+              </View>
+            </TouchableOpacity>
             <Text style={styles.profileEmail}>{user.email}</Text>
             {editingName ? (
               <View style={styles.editNameRow}>
@@ -974,7 +1083,11 @@ export default function App() {
           <View style={styles.profileCard}>
             {householdMembers.map((member, index) => (
               <View key={member.user_id} style={[styles.memberRow, index < householdMembers.length - 1 && styles.memberRowBorder]}>
-                <Ionicons name="person-circle-outline" size={36} color="#2c3e50" />
+                {member.avatar_url ? (
+                  <Image source={{ uri: member.avatar_url }} style={styles.memberAvatar} />
+                ) : (
+                  <Ionicons name="person-circle-outline" size={36} color="#2c3e50" />
+                )}
                 <View style={styles.memberInfo}>
                   <Text style={styles.memberName}>{member.full_name || 'Unknown'}</Text>
                   <Text style={styles.memberJoined}>Joined {new Date(member.joined_at).toLocaleDateString()}</Text>
@@ -1068,6 +1181,7 @@ export default function App() {
                   setEditingItem(item);
                   setEditName(item.name);
                   setEditCategory(item.category);
+                  setEditThreshold(item.low_stock_threshold != null ? item.low_stock_threshold.toString() : '2');
                 }}
               >
                 <Text style={styles.imageModalCloseText}>Edit</Text>
@@ -1102,6 +1216,15 @@ export default function App() {
                 </TouchableOpacity>
               ))}
             </View>
+            <Text style={[styles.formLabel, { marginTop: 12 }]}>Low Stock Alert</Text>
+            <TextInput
+              style={[styles.formInput, { width: 80 }]}
+              value={editThreshold}
+              onChangeText={setEditThreshold}
+              placeholder="2"
+              placeholderTextColor="#999"
+              keyboardType="numeric"
+            />
             <TouchableOpacity style={styles.confirmBtn} onPress={saveItemEdit}>
               <Text style={styles.confirmBtnText}>Save Changes</Text>
             </TouchableOpacity>
@@ -1287,4 +1410,9 @@ const styles = StyleSheet.create({
   editModal: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   editModalCard: { backgroundColor: 'white', borderRadius: 16, padding: 24, width: '90%' },
   editModalTitle: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50', marginBottom: 12 },
+  avatarContainer: { position: 'relative', alignSelf: 'center', marginBottom: 4 },
+  avatarImage: { width: 80, height: 80, borderRadius: 40 },
+  avatarPlaceholder: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#f0f0f0', justifyContent: 'center', alignItems: 'center' },
+  avatarEditBadge: { position: 'absolute', bottom: 0, right: 0, backgroundColor: '#27ae60', borderRadius: 12, width: 24, height: 24, justifyContent: 'center', alignItems: 'center' },
+  memberAvatar: { width: 36, height: 36, borderRadius: 18 },
 });
