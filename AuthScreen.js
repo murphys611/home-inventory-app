@@ -12,6 +12,11 @@ export default function AuthScreen() {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
 
+  // ── Forgot Password State ──────────────────────────────────────────────
+  const [forgotPassword, setForgotPassword] = useState(false); // Shows reset screen
+  const [resetEmail, setResetEmail] = useState('');            // Email input for reset
+  const [resetSent, setResetSent] = useState(false);           // Shows confirmation message
+
   const handleAuth = async () => {
     if (!email || !password) {
       Alert.alert('Please enter your email and password.');
@@ -43,6 +48,91 @@ export default function AuthScreen() {
     }
   };
 
+  // Sends a password reset email via Supabase.
+  // redirectTo points to the app's custom URL scheme so the link opens the app
+  // instead of a browser. Requires "scheme" in app.json and the URL added to
+  // Supabase Dashboard → Authentication → URL Configuration → Redirect URLs.
+  const handleForgotPassword = async () => {
+    if (!resetEmail.trim()) {
+      Alert.alert('Please enter your email address.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(resetEmail.trim(), {
+        redirectTo: 'homeinventory://reset-password',
+      });
+      if (error) throw error;
+      setResetSent(true);
+    } catch (e) {
+      Alert.alert('Error', e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── Forgot Password Screen ─────────────────────────────────────────────
+  if (forgotPassword) {
+    return (
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <ScrollView contentContainerStyle={styles.inner}>
+          <Text style={styles.title}>🏠 Home Inventory</Text>
+
+          {resetSent ? (
+            // Confirmation state after email is sent
+            <>
+              <Text style={styles.subtitle}>Check your inbox!</Text>
+              <Text style={styles.resetInfo}>
+                We sent a password reset link to{'\n'}
+                <Text style={{ fontWeight: 'bold', color: '#2c3e50' }}>{resetEmail}</Text>
+              </Text>
+              <TouchableOpacity
+                style={styles.btn}
+                onPress={() => {
+                  setForgotPassword(false);
+                  setResetSent(false);
+                  setResetEmail('');
+                }}
+              >
+                <Text style={styles.btnText}>Back to Log In</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            // Input state — enter email to receive reset link
+            <>
+              <Text style={styles.subtitle}>Reset your password</Text>
+              <Text style={styles.resetInfo}>
+                Enter your account email and we'll send you a link to reset your password.
+              </Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Email"
+                placeholderTextColor="#999"
+                value={resetEmail}
+                onChangeText={setResetEmail}
+                autoCapitalize="none"
+                keyboardType="email-address"
+                autoFocus
+              />
+              <TouchableOpacity style={styles.btn} onPress={handleForgotPassword} disabled={loading}>
+                <Text style={styles.btnText}>
+                  {loading ? 'Sending...' : 'Send Reset Email'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => { setForgotPassword(false); setResetEmail(''); }}>
+                <Text style={styles.switchText}>← Back to Log In</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // ── Main Login / Sign Up Screen ────────────────────────────────────────
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -87,6 +177,16 @@ export default function AuthScreen() {
           </Text>
         </TouchableOpacity>
 
+        {/* Forgot Password link — only shown on login screen */}
+        {isLogin && (
+          <TouchableOpacity
+            style={styles.forgotBtn}
+            onPress={() => { setForgotPassword(true); setResetEmail(email); }}
+          >
+            <Text style={styles.forgotText}>Forgot your password?</Text>
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity onPress={() => {
           setIsLogin(!isLogin);
           setEmail('');
@@ -111,4 +211,7 @@ const styles = StyleSheet.create({
   btn: { backgroundColor: '#27ae60', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 16 },
   btnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   switchText: { color: '#27ae60', textAlign: 'center', fontSize: 14 },
+  forgotBtn: { alignItems: 'center', marginBottom: 16 },
+  forgotText: { color: '#999', fontSize: 14 },
+  resetInfo: { fontSize: 14, color: '#777', textAlign: 'center', marginBottom: 24, lineHeight: 22 },
 });
