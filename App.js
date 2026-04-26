@@ -133,6 +133,8 @@ export default function App() {
   const [editName, setEditName] = useState('');
   const [editCategory, setEditCategory] = useState('');
   const [editThreshold, setEditThreshold] = useState('');
+  const [linkingBarcode, setLinkingBarcode] = useState(null); // Barcode waiting to be linked
+  const [linkSearch, setLinkSearch] = useState('');           // Search text in link modal
 
   // ── Refs ────────────────────────────────────────────────────────────────
   const scanned = useRef(false);
@@ -407,6 +409,23 @@ export default function App() {
       await supabase.from('barcode_cache').upsert([{ barcode, name, category, image_url: imageUrl, created_by: user.id }], { onConflict: 'barcode', ignoreDuplicates: true });
     } catch (e) { console.log('Failed to save to shared cache', e); }
   };
+  // Links a scanned barcode to an existing inventory item the user picks
+  const linkBarcodeToItem = async (item) => {
+    try {
+      const { error } = await supabase.from('inventory')
+        .update({ barcode: linkingBarcode })
+        .eq('id', item.id);
+      if (error) throw error;
+      setInventory(prev => prev.map(i => i.id === item.id ? { ...i, barcode: linkingBarcode } : i));
+      saveToLocalCache(linkingBarcode, item.name, item.category, item.image);
+      saveToSharedBarcodeCache(linkingBarcode, item.name, item.category, item.image);
+      setLinkingBarcode(null);
+      setLinkSearch('');
+      Alert.alert('✓ Linked!', `${item.name} is now linked to this barcode. Future scans will recognize it automatically.`);
+    } catch (e) {
+      Alert.alert('Failed to link barcode.');
+    }
+  };
 
   // ─── BARCODE SCANNING ───────────────────────────────────────────────────
 
@@ -485,16 +504,23 @@ export default function App() {
           }
         } else {
           setScanStatus('');
-          Alert.alert('Product Not Found', 'This barcode wasn\'t recognized. You can add it manually — next time you scan it will be remembered.',
-            [{ text: 'Add Manually', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
-             { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }]);
+          Alert.alert('Product Not Found', 'This barcode wasn\'t recognized.',
+            [
+              { text: 'Add New Item', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
+              { text: 'Link to Existing', onPress: () => { setLinkingBarcode(barcode); setActiveTab('inventory'); } },
+              { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }
+            ]);
         }
       })
       .catch(() => {
         setScanStatus('');
         Alert.alert('Lookup Failed', 'Could not connect to product database.',
-          [{ text: 'Add Manually', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
-           { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }]);
+          [
+            { text: 'Add New Item', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
+            { text: 'Link to Existing', onPress: () => { setLinkingBarcode(barcode); setActiveTab('inventory'); } },
+            { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }
+          ]);
+        
       });
   };
 
@@ -1013,6 +1039,50 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
+      {/* ── LINK BARCODE MODAL ──
+          Opens when user scans an unrecognized barcode and picks "Link to Existing".
+          Shows a searchable list of inventory — tapping an item links the barcode to it. */}
+      <Modal visible={!!linkingBarcode} transparent animationType="slide" onRequestClose={() => { setLinkingBarcode(null); setLinkSearch(''); }}>
+        <View style={styles.linkModalBackdrop}>
+          <View style={styles.linkModalCard}>
+            <Text style={styles.linkModalTitle}>Link to Existing Item</Text>
+            <Text style={styles.linkModalSubtitle}>Which item does this barcode belong to?</Text>
+            <TextInput
+              style={[styles.searchBar, { marginBottom: 12 }]}
+              placeholder="🔍 Search items..."
+              placeholderTextColor="#999"
+              value={linkSearch}
+              onChangeText={setLinkSearch}
+              autoFocus
+            />
+            <ScrollView style={{ maxHeight: 360 }}>
+              {inventory
+                .filter(item => item.name.toLowerCase().includes(linkSearch.toLowerCase()))
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map(item => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={styles.linkModalItem}
+                    onPress={() => linkBarcodeToItem(item)}
+                  >
+                    {item.image
+                      ? <Image source={{ uri: item.image }} style={styles.linkModalItemImage} />
+                      : <View style={styles.linkModalItemImagePlaceholder}><Ionicons name="image-outline" size={16} color="#bbb" /></View>}
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.linkModalItemName} numberOfLines={1}>{item.name}</Text>
+                      <Text style={styles.linkModalItemCategory}>{getCategoryLabel(item.category)}</Text>
+                    </View>
+                    <Ionicons name="link-outline" size={20} color="#27ae60" />
+                  </TouchableOpacity>
+                ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.cancelFormBtn} onPress={() => { setLinkingBarcode(null); setLinkSearch(''); }}>
+              <Text style={styles.cancelFormBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── BOTTOM TAB BAR ── */}
       <View style={styles.tabBar}>
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('inventory')}>
@@ -1181,4 +1251,13 @@ const styles = StyleSheet.create({
   avatarPlaceholder: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#f0f0f0', justifyContent: 'center', alignItems: 'center' },
   avatarEditBadge: { position: 'absolute', bottom: 0, right: 0, backgroundColor: '#27ae60', borderRadius: 12, width: 24, height: 24, justifyContent: 'center', alignItems: 'center' },
   memberAvatar: { width: 36, height: 36, borderRadius: 18 },
+  linkModalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  linkModalCard: { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 40 },
+  linkModalTitle: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50', marginBottom: 4 },
+  linkModalSubtitle: { fontSize: 13, color: '#999', marginBottom: 16 },
+  linkModalItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0', gap: 12 },
+  linkModalItemImage: { width: 40, height: 40, borderRadius: 6 },
+  linkModalItemImagePlaceholder: { width: 40, height: 40, borderRadius: 6, backgroundColor: '#ddd', justifyContent: 'center', alignItems: 'center' },
+  linkModalItemName: { fontSize: 14, color: '#2c3e50', fontWeight: '500' },
+  linkModalItemCategory: { fontSize: 11, color: '#999', marginTop: 2 },
 });
