@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity, FlatList,
-  TextInput, Alert, Image, ActivityIndicator, ScrollView, Share
+  TextInput, Alert, Image, ActivityIndicator, ScrollView, Share, Modal
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
@@ -17,7 +17,6 @@ import ResetPasswordScreen from './ResetPasswordScreen';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
-// Category definitions — label shown in UI, value stored in DB, color for tags
 const CATEGORIES = [
   { label: 'Food', value: 'food', color: '#e67e22' },
   { label: 'Drinks', value: 'drinks', color: '#16a085' },
@@ -26,11 +25,9 @@ const CATEGORIES = [
   { label: 'Other', value: 'other', color: '#7f8c8d' },
 ];
 
-// Items at or below this quantity trigger a low stock alert
 const LOW_STOCK_THRESHOLD = 2;
 
 // ─── NOTIFICATION HANDLER ──────────────────────────────────────────────────
-// Configures how notifications appear when the app is in the foreground
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -43,65 +40,68 @@ Notifications.setNotificationHandler({
 export default function App() {
 
   // ── Auth State ──────────────────────────────────────────────────────────
-  const [user, setUser] = useState(null);               // Logged in user object
-  const [householdId, setHouseholdId] = useState(null); // Current household ID
-  const [checkingAuth, setCheckingAuth] = useState(true); // True while checking session on startup
+  const [user, setUser] = useState(null);
+  const [householdId, setHouseholdId] = useState(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
   // ── Password Reset State ────────────────────────────────────────────────
-  const [resetPasswordMode, setResetPasswordMode] = useState(false); // Shows reset screen when deep link opens app
+  const [resetPasswordMode, setResetPasswordMode] = useState(false);
 
   // ── Camera Permission ───────────────────────────────────────────────────
   const [permission, requestPermission] = useCameraPermissions();
 
   // ── Navigation ──────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState('inventory'); // Currently visible tab
-  const [scanning, setScanning] = useState(false);         // Whether barcode camera is open
+  const [activeTab, setActiveTab] = useState('inventory');
+  const [scanning, setScanning] = useState(false);
 
   // ── Inventory State ─────────────────────────────────────────────────────
-  const [inventory, setInventory] = useState([]);     // All inventory items from Supabase
-  const [loading, setLoading] = useState(true);       // Loading spinner for inventory list
+  const [inventory, setInventory] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   // ── Search, Filter & Sort ───────────────────────────────────────────────
-  const [searchQuery, setSearchQuery] = useState('');          // Search bar text
-  const [filterCategory, setFilterCategory] = useState('all'); // Active category filter
-  const [sortBy, setSortBy] = useState('name');                // Active sort option
-  const [showSortOptions, setShowSortOptions] = useState(false); // Sort dropdown visibility
-  const [compactView, setCompactView] = useState(false);       // Toggle: card view vs compact list
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterCategory, setFilterCategory] = useState('all');
+  const [sortBy, setSortBy] = useState('name');
+  const [showSortOptions, setShowSortOptions] = useState(false);
+  const [compactView, setCompactView] = useState(false);
 
   // ── Add Item Form State ─────────────────────────────────────────────────
-  const [productName, setProductName] = useState('');          // Product name input
-  const [quantity, setQuantity] = useState('1');               // Quantity input
-  const [productImage, setProductImage] = useState(null);      // Product image URI
-  const [currentBarcode, setCurrentBarcode] = useState(null);  // Barcode from last scan
-  const [selectedCategory, setSelectedCategory] = useState('food'); // Selected category
-  const [scanStatus, setScanStatus] = useState('');            // Status message after scan
-  const [expirationDate, setExpirationDate] = useState('');    // Optional expiration date (MM/DD/YYYY)
+  const [productName, setProductName] = useState('');
+  const [quantity, setQuantity] = useState('1');
+  const [productImage, setProductImage] = useState(null);
+  const [currentBarcode, setCurrentBarcode] = useState(null);
+  const [selectedCategory, setSelectedCategory] = useState('food');
+  const [scanStatus, setScanStatus] = useState('');
+  const [expirationDate, setExpirationDate] = useState('');
 
   // ── Shopping List State ─────────────────────────────────────────────────
-  const [checkedItems, setCheckedItems] = useState({});        // Tracks checked items by ID
-  const [restockQuantities, setRestockQuantities] = useState({}); // Restock qty per item
+  const [checkedItems, setCheckedItems] = useState({});
+  const [restockQuantities, setRestockQuantities] = useState({});
 
   // ── Profile State ───────────────────────────────────────────────────────
-  const [householdCode, setHouseholdCode] = useState('');      // Household join code
-  const [householdMembers, setHouseholdMembers] = useState([]); // All household members
-  const [profileName, setProfileName] = useState('');          // Current user's display name
-  const [editingName, setEditingName] = useState(false);       // Whether name edit is active
-  const [newName, setNewName] = useState('');                  // Name input while editing
+  const [householdCode, setHouseholdCode] = useState('');
+  const [householdMembers, setHouseholdMembers] = useState([]);
+  const [profileName, setProfileName] = useState('');
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState('');
+
+  // ── Item Detail + Edit State ────────────────────────────────────────────
+  // selectedItem: opens the detail/image modal by tapping anywhere on a card
+  // editingItem: opens the edit form (triggered from inside the detail modal)
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [editingItem, setEditingItem] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editCategory, setEditCategory] = useState('');
 
   // ── Refs ────────────────────────────────────────────────────────────────
-  const scanned = useRef(false);     // Prevents duplicate barcode scans
-  const cameraReady = useRef(false); // Delays scan detection until camera is ready
+  const scanned = useRef(false);
+  const cameraReady = useRef(false);
 
   // ─── DEEP LINK HANDLER ─────────────────────────────────────────────────
-  // Catches homeinventory://reset-password links from the password reset email.
-  // Parses the access_token + refresh_token from the URL hash, sets a Supabase
-  // session, then shows the in-app ResetPasswordScreen.
   useEffect(() => {
-    // App already open — listen for incoming links
     const subscription = Linking.addEventListener('url', ({ url }) => {
       handleDeepLink(url);
     });
-    // App opened cold from the link
     Linking.getInitialURL().then(url => {
       if (url) handleDeepLink(url);
     });
@@ -110,7 +110,6 @@ export default function App() {
 
   const handleDeepLink = async (url) => {
     if (!url || !url.includes('reset-password')) return;
-    // Supabase puts tokens in the hash: homeinventory://reset-password#access_token=...
     const fragment = url.split('#')[1];
     if (!fragment) return;
     const params = {};
@@ -133,8 +132,6 @@ export default function App() {
   };
 
   // ─── AUTH LISTENER ─────────────────────────────────────────────────────
-  // Listens for auth state changes including session restore on startup
-  // INITIAL_SESSION fires when a saved session is restored from AsyncStorage
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
@@ -154,13 +151,11 @@ export default function App() {
     if (user) loadHousehold();
   }, [user]);
 
-  // ─── LOAD INVENTORY + SUBSCRIBE TO CHANGES WHEN HOUSEHOLD IS SET ───────
+  // ─── LOAD INVENTORY + SUBSCRIBE TO CHANGES ─────────────────────────────
   useEffect(() => {
     if (householdId) {
       loadInventory();
       requestNotificationPermission();
-
-      // Subscribe to real-time changes on the inventory table
       const channel = supabase
         .channel('inventory-changes')
         .on('postgres_changes',
@@ -168,12 +163,11 @@ export default function App() {
           () => { loadInventory(); }
         )
         .subscribe();
-
       return () => supabase.removeChannel(channel);
     }
   }, [householdId]);
 
-  // ─── AUTO OPEN CAMERA WHEN SCAN TAB IS TAPPED ──────────────────────────
+  // ─── AUTO OPEN CAMERA ──────────────────────────────────────────────────
   useEffect(() => {
     if (activeTab === 'scan') {
       if (!permission?.granted) {
@@ -193,7 +187,6 @@ export default function App() {
 
   // ─── HOUSEHOLD FUNCTIONS ────────────────────────────────────────────────
 
-  // Loads user's household, join code, profile name, and all member names
   const loadHousehold = async () => {
     try {
       const { data } = await supabase
@@ -203,38 +196,21 @@ export default function App() {
         .single();
       if (data) {
         setHouseholdId(data.household_id);
-
-        // Get the household join code
         const { data: household } = await supabase
-          .from('households')
-          .select('code')
-          .eq('id', data.household_id)
-          .single();
+          .from('households').select('code').eq('id', data.household_id).single();
         if (household) setHouseholdCode(household.code);
-
-        // Get current user's display name
         const { data: myProfile } = await supabase
-          .from('profiles')
-          .select('full_name')
-          .eq('id', user.id)
-          .single();
+          .from('profiles').select('full_name').eq('id', user.id).single();
         if (myProfile) setProfileName(myProfile.full_name || '');
-
-        // Get all household members and their names
         const { data: members } = await supabase
-          .from('household_members')
-          .select('user_id, joined_at')
-          .eq('household_id', data.household_id);
+          .from('household_members').select('user_id, joined_at').eq('household_id', data.household_id);
         if (members) {
           const { data: profiles } = await supabase
-            .from('profiles')
-            .select('id, full_name')
-            .in('id', members.map(m => m.user_id));
-          const membersWithNames = members.map(member => ({
+            .from('profiles').select('id, full_name').in('id', members.map(m => m.user_id));
+          setHouseholdMembers(members.map(member => ({
             ...member,
             full_name: profiles?.find(p => p.id === member.user_id)?.full_name || 'Unknown'
-          }));
-          setHouseholdMembers(membersWithNames);
+          })));
         }
       }
     } catch (e) {
@@ -242,14 +218,9 @@ export default function App() {
     }
   };
 
-  // Saves or updates the user's display name in the profiles table
   const saveName = async () => {
     try {
-      const { data: existing } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('id', user.id)
-        .single();
+      const { data: existing } = await supabase.from('profiles').select('id').eq('id', user.id).single();
       if (existing) {
         await supabase.from('profiles').update({ full_name: newName }).eq('id', user.id);
       } else {
@@ -263,7 +234,26 @@ export default function App() {
     }
   };
 
-  // Shares the household join code using the native OS share sheet
+  // Saves name + category edits for an existing item
+  const saveItemEdit = async () => {
+    if (!editName.trim()) {
+      Alert.alert('Please enter a product name.');
+      return;
+    }
+    try {
+      const { error } = await supabase.from('inventory')
+        .update({ name: editName, category: editCategory })
+        .eq('id', editingItem.id);
+      if (error) throw error;
+      setInventory(prev => prev.map(i =>
+        i.id === editingItem.id ? { ...i, name: editName, category: editCategory } : i
+      ));
+      setEditingItem(null);
+    } catch (e) {
+      Alert.alert('Failed to save changes.');
+    }
+  };
+
   const shareHouseholdCode = async () => {
     try {
       await Share.share({
@@ -277,13 +267,11 @@ export default function App() {
 
   // ─── NOTIFICATION FUNCTIONS ─────────────────────────────────────────────
 
-  // Requests permission to send push notifications
   const requestNotificationPermission = async () => {
     const { status } = await Notifications.requestPermissionsAsync();
     if (status !== 'granted') console.log('Notification permission denied');
   };
 
-  // Fires an immediate push notification when an item is low or out of stock
   const sendLowStockNotification = async (itemName, qty) => {
     await Notifications.scheduleNotificationAsync({
       content: {
@@ -293,19 +281,16 @@ export default function App() {
           : `${itemName} is running low — only ${qty} left.`,
         sound: true,
       },
-      trigger: null, // null = send immediately
+      trigger: null,
     });
   };
 
   // ─── INVENTORY FUNCTIONS ────────────────────────────────────────────────
 
-  // Loads all inventory items for the current household from Supabase
   const loadInventory = async () => {
     try {
       const { data, error } = await supabase
-        .from('inventory')
-        .select('*')
-        .eq('household_id', householdId);
+        .from('inventory').select('*').eq('household_id', householdId);
       if (error) throw error;
       if (data) setInventory(data);
     } catch (e) {
@@ -315,7 +300,6 @@ export default function App() {
     }
   };
 
-  // Inserts a new item into Supabase and updates local state
   const addItem = async () => {
     if (productName.trim() === '') {
       Alert.alert('Please enter a product name.');
@@ -331,27 +315,19 @@ export default function App() {
       household_id: householdId,
       expiration_date: expirationDate.trim() || null,
     };
-    if (currentBarcode) {
-      saveToLocalCache(currentBarcode, productName, selectedCategory, productImage);
-    }
+    if (currentBarcode) saveToLocalCache(currentBarcode, productName, selectedCategory, productImage);
     try {
       const { error } = await supabase.from('inventory').insert([newItem]);
       if (error) throw error;
       setInventory(prev => [...prev, newItem]);
-      // Reset all form fields after adding
-      setProductName('');
-      setQuantity('1');
-      setProductImage(null);
-      setCurrentBarcode(null);
-      setSelectedCategory('food');
-      setExpirationDate('');
+      setProductName(''); setQuantity('1'); setProductImage(null);
+      setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate('');
       setActiveTab('inventory');
     } catch (e) {
       Alert.alert('Failed to add item: ' + JSON.stringify(e));
     }
   };
 
-  // Deletes an item from Supabase and removes it from local state
   const deleteItem = async (id) => {
     try {
       const { error } = await supabase.from('inventory').delete().eq('id', id);
@@ -362,9 +338,6 @@ export default function App() {
     }
   };
 
-  // Updates an item's quantity by delta (+1 or -1).
-  // Notifications only fire when quantity lands EXACTLY on the threshold or hits 0.
-  // This prevents spamming alerts on every tap below the threshold.
   const changeQuantity = async (id, delta) => {
     const item = inventory.find(i => i.id === id);
     if (!item) return;
@@ -419,7 +392,6 @@ export default function App() {
 
   const lookupProduct = async (barcode) => {
     setCurrentBarcode(barcode);
-
     const cached = await checkLocalCache(barcode);
     if (cached) {
       const existing = inventory.find(item => item.barcode === barcode);
@@ -428,15 +400,11 @@ export default function App() {
         setScanStatus(`✓ Updated: ${cached.name} is now x${parseInt(existing.quantity) + 1}`);
         setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
       } else {
-        setProductName(cached.name);
-        setProductImage(cached.image);
-        setSelectedCategory(cached.category);
-        setScanStatus('');
-        setActiveTab('add');
+        setProductName(cached.name); setProductImage(cached.image);
+        setSelectedCategory(cached.category); setScanStatus(''); setActiveTab('add');
       }
       return;
     }
-
     fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}?fields=product_name,image_url,categories_tags`)
       .then(res => res.json())
       .then(data => {
@@ -450,11 +418,8 @@ export default function App() {
             setScanStatus(`✓ Updated: ${name} is now x${parseInt(existing.quantity) + 1}`);
             setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
           } else {
-            setProductName(name);
-            setProductImage(image);
-            setSelectedCategory(category);
-            setScanStatus('');
-            setActiveTab('add');
+            setProductName(name); setProductImage(image);
+            setSelectedCategory(category); setScanStatus(''); setActiveTab('add');
           }
         } else {
           lookupProductFallback(barcode);
@@ -478,27 +443,15 @@ export default function App() {
             setScanStatus(`✓ Updated: ${name} is now x${parseInt(existing.quantity) + 1}`);
             setTimeout(() => { setActiveTab('inventory'); setScanStatus(''); }, 2000);
           } else {
-            setProductName(name);
-            setProductImage(image);
-            setSelectedCategory(category);
-            setScanStatus('');
-            setActiveTab('add');
+            setProductName(name); setProductImage(image);
+            setSelectedCategory(category); setScanStatus(''); setActiveTab('add');
           }
         } else {
           setScanStatus('');
-          Alert.alert(
-            'Product Not Found',
+          Alert.alert('Product Not Found',
             'This barcode wasn\'t recognized. You can add it manually — next time you scan this barcode it will be remembered automatically.',
             [
-              {
-                text: 'Add Manually',
-                onPress: () => {
-                  setProductName('');
-                  setProductImage(null);
-                  setSelectedCategory('other');
-                  setActiveTab('add');
-                }
-              },
+              { text: 'Add Manually', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
               { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }
             ]
           );
@@ -506,19 +459,9 @@ export default function App() {
       })
       .catch(() => {
         setScanStatus('');
-        Alert.alert(
-          'Lookup Failed',
-          'Could not connect to product database. You can add it manually.',
+        Alert.alert('Lookup Failed', 'Could not connect to product database. You can add it manually.',
           [
-            {
-              text: 'Add Manually',
-              onPress: () => {
-                setProductName('');
-                setProductImage(null);
-                setSelectedCategory('other');
-                setActiveTab('add');
-              }
-            },
+            { text: 'Add Manually', onPress: () => { setProductName(''); setProductImage(null); setSelectedCategory('other'); setActiveTab('add'); } },
             { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }
           ]
         );
@@ -530,37 +473,30 @@ export default function App() {
   const detectCategory = (tags) => {
     if (!tags) return 'other';
     const tagString = Array.isArray(tags) ? tags.join(' ').toLowerCase() : tags.toLowerCase();
-    if (tagString.includes('hygiene') || tagString.includes('beauty') ||
-      tagString.includes('personal-care') || tagString.includes('hair-care') ||
-      tagString.includes('oral-care') || tagString.includes('skin-care') ||
-      tagString.includes('body-care') || tagString.includes('cosmetic') ||
-      tagString.includes('deodorant') || tagString.includes('shampoo') ||
-      tagString.includes('conditioner') || tagString.includes('toothpaste') ||
-      tagString.includes('mouthwash') || tagString.includes('chapstick') ||
-      tagString.includes('lip-balm')) return 'hygiene';
-    if (tagString.includes('clean') || tagString.includes('household') ||
-      tagString.includes('detergent') || tagString.includes('laundry') ||
-      tagString.includes('dishwash')) return 'cleaning';
-    if (tagString.includes('beverage') || tagString.includes('drink') ||
-      tagString.includes('juice') || tagString.includes('soda') ||
-      tagString.includes('water') || tagString.includes('coffee') ||
+    if (tagString.includes('hygiene') || tagString.includes('beauty') || tagString.includes('personal-care') ||
+      tagString.includes('hair-care') || tagString.includes('oral-care') || tagString.includes('skin-care') ||
+      tagString.includes('body-care') || tagString.includes('cosmetic') || tagString.includes('deodorant') ||
+      tagString.includes('shampoo') || tagString.includes('conditioner') || tagString.includes('toothpaste') ||
+      tagString.includes('mouthwash') || tagString.includes('chapstick') || tagString.includes('lip-balm')) return 'hygiene';
+    if (tagString.includes('clean') || tagString.includes('household') || tagString.includes('detergent') ||
+      tagString.includes('laundry') || tagString.includes('dishwash')) return 'cleaning';
+    if (tagString.includes('beverage') || tagString.includes('drink') || tagString.includes('juice') ||
+      tagString.includes('soda') || tagString.includes('water') || tagString.includes('coffee') ||
       tagString.includes('tea')) return 'drinks';
-    if (tagString.includes('food') || tagString.includes('dairy') ||
-      tagString.includes('snack') || tagString.includes('grocery')) return 'food';
+    if (tagString.includes('food') || tagString.includes('dairy') || tagString.includes('snack') ||
+      tagString.includes('grocery')) return 'food';
     return 'other';
   };
 
   const detectCategoryFromString = (category) => {
     if (!category) return 'other';
     const cat = category.toLowerCase();
-    if (cat.includes('health') || cat.includes('beauty') || cat.includes('personal') ||
-      cat.includes('hair') || cat.includes('skin') || cat.includes('oral') ||
-      cat.includes('hygiene') || cat.includes('cosmetic')) return 'hygiene';
-    if (cat.includes('clean') || cat.includes('household') || cat.includes('laundry') ||
-      cat.includes('paper') || cat.includes('towel') || cat.includes('detergent')) return 'cleaning';
-    if (cat.includes('beverage') || cat.includes('drink') || cat.includes('juice') ||
-      cat.includes('soda') || cat.includes('water') || cat.includes('coffee') ||
-      cat.includes('tea')) return 'drinks';
+    if (cat.includes('health') || cat.includes('beauty') || cat.includes('personal') || cat.includes('hair') ||
+      cat.includes('skin') || cat.includes('oral') || cat.includes('hygiene') || cat.includes('cosmetic')) return 'hygiene';
+    if (cat.includes('clean') || cat.includes('household') || cat.includes('laundry') || cat.includes('paper') ||
+      cat.includes('towel') || cat.includes('detergent')) return 'cleaning';
+    if (cat.includes('beverage') || cat.includes('drink') || cat.includes('juice') || cat.includes('soda') ||
+      cat.includes('water') || cat.includes('coffee') || cat.includes('tea')) return 'drinks';
     if (cat.includes('food') || cat.includes('grocery') || cat.includes('snack')) return 'food';
     return 'other';
   };
@@ -570,18 +506,14 @@ export default function App() {
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.5,
+      allowsEditing: true, aspect: [1, 1], quality: 0.5,
     });
     if (!result.canceled) setProductImage(result.assets[0].uri);
   };
 
   const takePhoto = async () => {
     let result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.5,
+      allowsEditing: true, aspect: [1, 1], quality: 0.5,
     });
     if (!result.canceled) setProductImage(result.assets[0].uri);
   };
@@ -598,20 +530,14 @@ export default function App() {
   const getFilteredAndSorted = () => {
     let result = [...inventory];
     if (searchQuery.trim() !== '') {
-      result = result.filter(item =>
-        item.name.toLowerCase().includes(searchQuery.toLowerCase())
-      );
+      result = result.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()));
     }
     if (filterCategory !== 'all') {
       result = result.filter(item => item.category === filterCategory);
     }
-    if (sortBy === 'name') {
-      result.sort((a, b) => a.name.localeCompare(b.name));
-    } else if (sortBy === 'category') {
-      result.sort((a, b) => (a.category || '').localeCompare(b.category || ''));
-    } else if (sortBy === 'lowstock') {
-      result.sort((a, b) => parseInt(a.quantity) - parseInt(b.quantity));
-    }
+    if (sortBy === 'name') result.sort((a, b) => a.name.localeCompare(b.name));
+    else if (sortBy === 'category') result.sort((a, b) => (a.category || '').localeCompare(b.category || ''));
+    else if (sortBy === 'lowstock') result.sort((a, b) => parseInt(a.quantity) - parseInt(b.quantity));
     return result;
   };
 
@@ -619,7 +545,6 @@ export default function App() {
 
   // ─── CONDITIONAL SCREENS ────────────────────────────────────────────────
 
-  // Show spinner while checking if user is logged in
   if (checkingAuth) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f4f4f4' }}>
@@ -628,7 +553,6 @@ export default function App() {
     );
   }
 
-  // Show password reset screen when opened via email reset link
   if (resetPasswordMode) {
     return <ResetPasswordScreen onComplete={() => {
       setResetPasswordMode(false);
@@ -639,7 +563,6 @@ export default function App() {
   if (!user) return <AuthScreen />;
   if (!householdId) return <HouseholdScreen user={user} onHouseholdJoined={setHouseholdId} />;
 
-  // Show full screen camera when scan tab is active
   if (activeTab === 'scan' && scanning) {
     return (
       <View style={{ flex: 1 }}>
@@ -648,9 +571,7 @@ export default function App() {
           facing="back"
           onBarcodeScanned={handleBarcode}
           barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128'] }}
-          onCameraReady={() => {
-            setTimeout(() => { cameraReady.current = true; }, 1500);
-          }}
+          onCameraReady={() => { setTimeout(() => { cameraReady.current = true; }, 1500); }}
         />
         <View style={styles.scanOverlay}>
           <Text style={styles.scanTitle}>Scan a Barcode</Text>
@@ -659,10 +580,8 @@ export default function App() {
         </View>
         <View style={styles.scanCancelRow}>
           <TouchableOpacity style={styles.scanCancelBtn} onPress={() => {
-            setScanning(false);
-            scanned.current = false;
-            cameraReady.current = false;
-            setActiveTab('inventory');
+            setScanning(false); scanned.current = false;
+            cameraReady.current = false; setActiveTab('inventory');
           }}>
             <Text style={styles.scanCancelText}>Cancel</Text>
           </TouchableOpacity>
@@ -671,7 +590,6 @@ export default function App() {
     );
   }
 
-  // Show spinner while looking up product after scan
   if (activeTab === 'scan' && scanStatus) {
     return (
       <View style={styles.lookupScreen}>
@@ -690,7 +608,6 @@ export default function App() {
         <View style={styles.screen}>
           <Text style={styles.title}>Home Inventory</Text>
 
-          {/* Search Bar */}
           <TextInput
             style={styles.searchBar}
             placeholder="🔍 Search inventory..."
@@ -699,7 +616,6 @@ export default function App() {
             onChangeText={setSearchQuery}
           />
 
-          {/* Category Filter Tabs + Sort + View Toggle */}
           <View style={styles.filterSortRow}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
               <TouchableOpacity
@@ -720,22 +636,14 @@ export default function App() {
                 </TouchableOpacity>
               ))}
             </ScrollView>
-
-            {/* View Toggle Button — switches between card and compact list */}
             <TouchableOpacity style={styles.sortBtn} onPress={() => setCompactView(prev => !prev)}>
-              <Ionicons
-                name={compactView ? 'grid-outline' : 'list-outline'}
-                size={16}
-                color="white"
-              />
+              <Ionicons name={compactView ? 'grid-outline' : 'list-outline'} size={16} color="white" />
             </TouchableOpacity>
-
             <TouchableOpacity style={[styles.sortBtn, { marginLeft: 6 }]} onPress={() => setShowSortOptions(!showSortOptions)}>
               <Text style={styles.sortBtnText}>⇅ Sort</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Sort Dropdown */}
           {showSortOptions && (
             <View style={styles.sortDropdown}>
               {[
@@ -756,7 +664,6 @@ export default function App() {
             </View>
           )}
 
-          {/* Inventory List */}
           {loading ? (
             <View style={styles.emptyState}>
               <ActivityIndicator size="large" color="#2c3e50" />
@@ -766,13 +673,11 @@ export default function App() {
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateIcon}>📦</Text>
               <Text style={styles.emptyStateText}>
-                {searchQuery || filterCategory !== 'all'
-                  ? 'No items match your search.'
-                  : 'No items yet. Tap Scan to get started!'}
+                {searchQuery || filterCategory !== 'all' ? 'No items match your search.' : 'No items yet. Tap Scan to get started!'}
               </Text>
             </View>
           ) : compactView ? (
-            /* ── COMPACT LIST VIEW ── names, qty controls, low stock indicator only */
+            /* ── COMPACT LIST VIEW ── */
             <FlatList
               data={getFilteredAndSorted()}
               keyExtractor={item => item.id}
@@ -780,9 +685,7 @@ export default function App() {
                 <View style={[styles.compactItem, isLowStock(item.quantity) && styles.itemLowStock]}>
                   <View style={[styles.compactDot, { backgroundColor: getCategoryColor(item.category) }]} />
                   <Text style={styles.compactName} numberOfLines={1}>{item.name}</Text>
-                  {isLowStock(item.quantity) && (
-                    <Text style={styles.compactLowStock}>⚠️</Text>
-                  )}
+                  {isLowStock(item.quantity) && <Text style={styles.compactLowStock}>⚠️</Text>}
                   <View style={styles.qtyControls}>
                     <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, -1)}>
                       <Text style={styles.qtyBtnText}>−</Text>
@@ -801,17 +704,28 @@ export default function App() {
               )}
             />
           ) : (
-            /* ── CARD VIEW (default) ── full cards with images and tags */
+            /* ── CARD VIEW ──
+               Tapping anywhere on the card opens the detail modal.
+               Qty +/- and delete still work independently via onPress with stopPropagation via their own TouchableOpacity. */
             <FlatList
               data={getFilteredAndSorted()}
               keyExtractor={item => item.id}
               renderItem={({ item }) => (
-                <View style={[styles.item, isLowStock(item.quantity) && styles.itemLowStock]}>
+                <TouchableOpacity
+                  style={[styles.item, isLowStock(item.quantity) && styles.itemLowStock]}
+                  onPress={() => setSelectedItem(item)}
+                  activeOpacity={0.75}
+                >
+                  {/* Product Image */}
                   {item.image ? (
                     <Image source={{ uri: item.image }} style={styles.itemImage} />
                   ) : (
-                    <View style={styles.itemImagePlaceholder} />
+                    <View style={styles.itemImagePlaceholder}>
+                      <Ionicons name="image-outline" size={20} color="#bbb" />
+                    </View>
                   )}
+
+                  {/* Product Info */}
                   <View style={styles.itemInfo}>
                     <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
                     <View style={styles.itemTagRow}>
@@ -832,38 +746,36 @@ export default function App() {
                         const today = new Date();
                         const daysUntil = Math.ceil((exp - today) / (1000 * 60 * 60 * 24));
                         if (daysUntil < 0) return (
-                          <View style={styles.expiredTag}>
-                            <Text style={styles.expiredTagText}>⚠️ Expired</Text>
-                          </View>
+                          <View style={styles.expiredTag}><Text style={styles.expiredTagText}>⚠️ Expired</Text></View>
                         );
                         if (daysUntil <= 7) return (
-                          <View style={styles.expiringSoonTag}>
-                            <Text style={styles.expiringSoonTagText}>⏰ {daysUntil}d left</Text>
-                          </View>
+                          <View style={styles.expiringSoonTag}><Text style={styles.expiringSoonTagText}>⏰ {daysUntil}d left</Text></View>
                         );
                         return (
-                          <View style={styles.expirationTag}>
-                            <Text style={styles.expirationTagText}>📅 {item.expiration_date}</Text>
-                          </View>
+                          <View style={styles.expirationTag}><Text style={styles.expirationTagText}>📅 {item.expiration_date}</Text></View>
                         );
                       })()}
                     </View>
                   </View>
+
+                  {/* Qty Controls — stopPropagation so tapping +/- doesn't open the modal */}
                   <View style={styles.qtyControls}>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, -1)}>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, -1); }}>
                       <Text style={styles.qtyBtnText}>−</Text>
                     </TouchableOpacity>
                     <Text style={[styles.qtyNumber, isLowStock(item.quantity) && styles.qtyLow]}>
                       {item.quantity}
                     </Text>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, 1)}>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, 1); }}>
                       <Text style={styles.qtyBtnText}>+</Text>
                     </TouchableOpacity>
                   </View>
-                  <TouchableOpacity onPress={() => deleteItem(item.id)}>
+
+                  {/* Delete */}
+                  <TouchableOpacity onPress={(e) => { e.stopPropagation?.(); deleteItem(item.id); }}>
                     <Text style={styles.deleteBtn}>✕</Text>
                   </TouchableOpacity>
-                </View>
+                </TouchableOpacity>
               )}
             />
           )}
@@ -874,7 +786,6 @@ export default function App() {
       {activeTab === 'add' && (
         <ScrollView style={styles.screen} contentContainerStyle={styles.addContent}>
           <Text style={styles.title}>Add Item</Text>
-
           <View style={styles.addImageRow}>
             {productImage ? (
               <Image source={{ uri: productImage }} style={styles.addPreviewImage} />
@@ -892,26 +803,16 @@ export default function App() {
               </TouchableOpacity>
             </View>
           </View>
-
           <Text style={styles.formLabel}>Product Name</Text>
           <TextInput
-            style={styles.formInput}
-            placeholder="e.g. Bounty Paper Towels"
-            placeholderTextColor="#999"
-            value={productName}
-            onChangeText={setProductName}
+            style={styles.formInput} placeholder="e.g. Bounty Paper Towels"
+            placeholderTextColor="#999" value={productName} onChangeText={setProductName}
           />
-
           <Text style={styles.formLabel}>Quantity</Text>
           <TextInput
-            style={[styles.formInput, { width: 80 }]}
-            placeholder="1"
-            placeholderTextColor="#999"
-            value={quantity}
-            onChangeText={setQuantity}
-            keyboardType="numeric"
+            style={[styles.formInput, { width: 80 }]} placeholder="1"
+            placeholderTextColor="#999" value={quantity} onChangeText={setQuantity} keyboardType="numeric"
           />
-
           <Text style={styles.formLabel}>Category</Text>
           <View style={styles.categoryRow}>
             {CATEGORIES.map(cat => (
@@ -926,33 +827,23 @@ export default function App() {
               </TouchableOpacity>
             ))}
           </View>
-
           {(selectedCategory === 'food' || selectedCategory === 'drinks') && (
             <>
               <Text style={styles.formLabel}>
                 Expiration Date <Text style={{ color: '#999', fontWeight: 'normal' }}>(optional)</Text>
               </Text>
               <TextInput
-                style={styles.formInput}
-                placeholder="MM/DD/YYYY"
-                placeholderTextColor="#999"
-                value={expirationDate}
-                onChangeText={setExpirationDate}
+                style={styles.formInput} placeholder="MM/DD/YYYY"
+                placeholderTextColor="#999" value={expirationDate} onChangeText={setExpirationDate}
               />
             </>
           )}
-
           <TouchableOpacity style={styles.confirmBtn} onPress={addItem}>
             <Text style={styles.confirmBtnText}>Add to Inventory</Text>
           </TouchableOpacity>
-
           <TouchableOpacity style={styles.cancelFormBtn} onPress={() => {
-            setProductName('');
-            setQuantity('1');
-            setProductImage(null);
-            setCurrentBarcode(null);
-            setSelectedCategory('food');
-            setExpirationDate('');
+            setProductName(''); setQuantity('1'); setProductImage(null);
+            setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate('');
             setActiveTab('inventory');
           }}>
             <Text style={styles.cancelFormBtnText}>Cancel</Text>
@@ -994,52 +885,45 @@ export default function App() {
                   </Text>
                 </TouchableOpacity>
               )}
-
               <FlatList
-                data={CATEGORIES.filter(cat =>
-                  shoppingList.some(item => item.category === cat.value)
-                )}
+                data={CATEGORIES.filter(cat => shoppingList.some(item => item.category === cat.value))}
                 keyExtractor={cat => cat.value}
                 renderItem={({ item: cat }) => (
                   <View>
                     <View style={[styles.shoppingCategoryHeader, { borderLeftColor: cat.color }]}>
-                      <Text style={[styles.shoppingCategoryLabel, { color: cat.color }]}>
-                        {cat.label}
-                      </Text>
+                      <Text style={[styles.shoppingCategoryLabel, { color: cat.color }]}>{cat.label}</Text>
                       <Text style={styles.shoppingCategoryCount}>
                         {shoppingList.filter(i => i.category === cat.value).length} items
                       </Text>
                     </View>
-                    {shoppingList
-                      .filter(item => item.category === cat.value)
-                      .map(item => (
-                        <TouchableOpacity
-                          key={item.id}
-                          style={[styles.shoppingItem, checkedItems[item.id] && styles.shoppingItemChecked]}
-                          onPress={() => setCheckedItems(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
-                        >
-                          <View style={[styles.checkbox, checkedItems[item.id] && styles.checkboxChecked]}>
-                            {checkedItems[item.id] && <Ionicons name="checkmark" size={14} color="white" />}
-                          </View>
-                          {item.image ? (
-                            <Image source={{ uri: item.image }} style={styles.itemImage} />
-                          ) : (
-                            <View style={styles.itemImagePlaceholder} />
-                          )}
-                          <Text style={[styles.shoppingItemName, checkedItems[item.id] && styles.shoppingItemNameChecked]} numberOfLines={2}>
-                            {item.name}
-                          </Text>
-                          <View style={styles.restockQtyRow}>
-                            <Text style={styles.restockQtyLabel}>Qty</Text>
-                            <TextInput
-                              style={styles.restockQtyInput}
-                              value={restockQuantities[item.id] || '1'}
-                              onChangeText={(val) => setRestockQuantities(prev => ({ ...prev, [item.id]: val }))}
-                              keyboardType="numeric"
-                            />
-                          </View>
-                        </TouchableOpacity>
-                      ))}
+                    {shoppingList.filter(item => item.category === cat.value).map(item => (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={[styles.shoppingItem, checkedItems[item.id] && styles.shoppingItemChecked]}
+                        onPress={() => setCheckedItems(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                      >
+                        <View style={[styles.checkbox, checkedItems[item.id] && styles.checkboxChecked]}>
+                          {checkedItems[item.id] && <Ionicons name="checkmark" size={14} color="white" />}
+                        </View>
+                        {item.image ? (
+                          <Image source={{ uri: item.image }} style={styles.itemImage} />
+                        ) : (
+                          <View style={styles.itemImagePlaceholder} />
+                        )}
+                        <Text style={[styles.shoppingItemName, checkedItems[item.id] && styles.shoppingItemNameChecked]} numberOfLines={2}>
+                          {item.name}
+                        </Text>
+                        <View style={styles.restockQtyRow}>
+                          <Text style={styles.restockQtyLabel}>Qty</Text>
+                          <TextInput
+                            style={styles.restockQtyInput}
+                            value={restockQuantities[item.id] || '1'}
+                            onChangeText={(val) => setRestockQuantities(prev => ({ ...prev, [item.id]: val }))}
+                            keyboardType="numeric"
+                          />
+                        </View>
+                      </TouchableOpacity>
+                    ))}
                   </View>
                 )}
               />
@@ -1052,19 +936,14 @@ export default function App() {
       {activeTab === 'profile' && (
         <ScrollView style={styles.screen}>
           <Text style={styles.title}>Profile</Text>
-
           <View style={styles.profileCard}>
             <Ionicons name="person-circle-outline" size={60} color="#2c3e50" />
             <Text style={styles.profileEmail}>{user.email}</Text>
             {editingName ? (
               <View style={styles.editNameRow}>
                 <TextInput
-                  style={styles.editNameInput}
-                  value={newName}
-                  onChangeText={setNewName}
-                  placeholder="Enter your name"
-                  placeholderTextColor="#999"
-                  autoFocus
+                  style={styles.editNameInput} value={newName} onChangeText={setNewName}
+                  placeholder="Enter your name" placeholderTextColor="#999" autoFocus
                 />
                 <TouchableOpacity style={styles.saveNameBtn} onPress={saveName}>
                   <Text style={styles.saveNameBtnText}>Save</Text>
@@ -1072,14 +951,10 @@ export default function App() {
               </View>
             ) : (
               <TouchableOpacity onPress={() => { setNewName(profileName); setEditingName(true); }}>
-                <Text style={styles.editNameLink}>
-                  {profileName ? profileName : '+ Add your name'}
-                </Text>
+                <Text style={styles.editNameLink}>{profileName ? profileName : '+ Add your name'}</Text>
               </TouchableOpacity>
             )}
           </View>
-
-          {/* Household Join Code + Share Button */}
           <Text style={styles.sectionHeader}>Your Household</Text>
           <View style={styles.profileCard}>
             <View style={styles.codeRow}>
@@ -1095,7 +970,6 @@ export default function App() {
             </View>
             <Text style={styles.codeHint}>Share this code with household members</Text>
           </View>
-
           <Text style={styles.sectionHeader}>Members ({householdMembers.length})</Text>
           <View style={styles.profileCard}>
             {householdMembers.map((member, index) => (
@@ -1103,41 +977,28 @@ export default function App() {
                 <Ionicons name="person-circle-outline" size={36} color="#2c3e50" />
                 <View style={styles.memberInfo}>
                   <Text style={styles.memberName}>{member.full_name || 'Unknown'}</Text>
-                  <Text style={styles.memberJoined}>
-                    Joined {new Date(member.joined_at).toLocaleDateString()}
-                  </Text>
+                  <Text style={styles.memberJoined}>Joined {new Date(member.joined_at).toLocaleDateString()}</Text>
                 </View>
                 {member.user_id === user.id && (
-                  <View style={styles.youBadge}>
-                    <Text style={styles.youBadgeText}>You</Text>
-                  </View>
+                  <View style={styles.youBadge}><Text style={styles.youBadgeText}>You</Text></View>
                 )}
               </View>
             ))}
           </View>
-
           <TouchableOpacity
             style={styles.logoutBtn}
             onPress={() => {
-              Alert.alert(
-                'Log Out',
-                'Are you sure you want to log out?',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Log Out',
-                    style: 'destructive',
-                    onPress: async () => {
-                      await supabase.auth.signOut();
-                      setHouseholdId(null);
-                      setInventory([]);
-                      setHouseholdMembers([]);
-                      setHouseholdCode('');
-                      setActiveTab('inventory');
-                    }
+              Alert.alert('Log Out', 'Are you sure you want to log out?', [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Log Out', style: 'destructive',
+                  onPress: async () => {
+                    await supabase.auth.signOut();
+                    setHouseholdId(null); setInventory([]);
+                    setHouseholdMembers([]); setHouseholdCode(''); setActiveTab('inventory');
                   }
-                ]
-              );
+                }
+              ]);
             }}
           >
             <Text style={styles.logoutBtnText}>Log Out</Text>
@@ -1146,34 +1007,131 @@ export default function App() {
         </ScrollView>
       )}
 
+      {/* ── ITEM DETAIL MODAL ──────────────────────────────────────────────
+          Opens when user taps anywhere on a card.
+          Shows enlarged image + product info + Edit and Close buttons.
+          Edit button closes this modal and opens the edit form modal. */}
+      <Modal visible={!!selectedItem} transparent animationType="fade" onRequestClose={() => setSelectedItem(null)}>
+        <TouchableOpacity style={styles.imageModalBackdrop} activeOpacity={1} onPress={() => setSelectedItem(null)}>
+          <View style={styles.imageModalCard}>
+            {/* Large image or placeholder */}
+            {selectedItem?.image ? (
+              <Image source={{ uri: selectedItem.image }} style={styles.imageModalImage} resizeMode="contain" />
+            ) : (
+              <View style={styles.imageModalPlaceholder}>
+                <Ionicons name="image-outline" size={60} color="#ddd" />
+              </View>
+            )}
+
+            {/* Product name */}
+            <Text style={styles.imageModalName}>{selectedItem?.name}</Text>
+
+            {/* Category badge */}
+            <View style={[styles.categoryTag, { backgroundColor: getCategoryColor(selectedItem?.category), alignSelf: 'center', marginBottom: 12 }]}>
+              <Text style={styles.categoryTagText}>
+                {CATEGORIES.find(c => c.value === selectedItem?.category)?.label || 'Other'}
+              </Text>
+            </View>
+
+            {/* Info rows */}
+            <View style={styles.imageModalInfoRow}>
+              <Text style={styles.imageModalLabel}>Quantity</Text>
+              <Text style={styles.imageModalValue}>{selectedItem?.quantity}</Text>
+            </View>
+            {selectedItem?.expiration_date && (
+              <View style={styles.imageModalInfoRow}>
+                <Text style={styles.imageModalLabel}>Expires</Text>
+                <Text style={styles.imageModalValue}>{selectedItem.expiration_date}</Text>
+              </View>
+            )}
+            {selectedItem?.barcode && (
+              <View style={styles.imageModalInfoRow}>
+                <Text style={styles.imageModalLabel}>Barcode</Text>
+                <Text style={styles.imageModalValue}>{selectedItem.barcode}</Text>
+              </View>
+            )}
+
+            {/* Close + Edit buttons */}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 16, width: '100%' }}>
+              <TouchableOpacity
+                style={[styles.imageModalClose, { backgroundColor: '#f0f0f0', flex: 1 }]}
+                onPress={() => setSelectedItem(null)}
+              >
+                <Text style={[styles.imageModalCloseText, { color: '#555' }]}>Close</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.imageModalClose, { flex: 1 }]}
+                onPress={() => {
+                  // Close detail modal, open edit modal
+                  const item = selectedItem;
+                  setSelectedItem(null);
+                  setEditingItem(item);
+                  setEditName(item.name);
+                  setEditCategory(item.category);
+                }}
+              >
+                <Text style={styles.imageModalCloseText}>Edit</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── EDIT ITEM MODAL ────────────────────────────────────────────────
+          Opens from the Edit button inside the detail modal.
+          Lets user change name and category, saves to Supabase. */}
+      <Modal visible={!!editingItem} transparent animationType="fade" onRequestClose={() => setEditingItem(null)}>
+        <View style={styles.editModal}>
+          <View style={styles.editModalCard}>
+            <Text style={styles.editModalTitle}>Edit Item</Text>
+            <TextInput
+              style={styles.formInput} value={editName} onChangeText={setEditName}
+              placeholder="Product name" placeholderTextColor="#999" autoFocus
+            />
+            <Text style={[styles.formLabel, { marginTop: 12 }]}>Category</Text>
+            <View style={styles.categoryRow}>
+              {CATEGORIES.map(cat => (
+                <TouchableOpacity
+                  key={cat.value}
+                  style={[styles.categoryBtn, { backgroundColor: editCategory === cat.value ? cat.color : '#ddd' }]}
+                  onPress={() => setEditCategory(cat.value)}
+                >
+                  <Text style={[styles.categoryBtnText, { color: editCategory === cat.value ? 'white' : '#555' }]}>
+                    {cat.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity style={styles.confirmBtn} onPress={saveItemEdit}>
+              <Text style={styles.confirmBtnText}>Save Changes</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelFormBtn} onPress={() => setEditingItem(null)}>
+              <Text style={styles.cancelFormBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── BOTTOM TAB BAR ── */}
       <View style={styles.tabBar}>
-
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('inventory')}>
           <Ionicons name={activeTab === 'inventory' ? 'grid' : 'grid-outline'} size={24} color={activeTab === 'inventory' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'inventory' && styles.tabLabelActive]}>Inventory</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.tabItem} onPress={() => {
-          setProductName('');
-          setQuantity('1');
-          setProductImage(null);
-          setCurrentBarcode(null);
-          setSelectedCategory('food');
-          setExpirationDate('');
+          setProductName(''); setQuantity('1'); setProductImage(null);
+          setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate('');
           setActiveTab('add');
         }}>
           <Ionicons name={activeTab === 'add' ? 'add-circle' : 'add-circle-outline'} size={24} color={activeTab === 'add' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'add' && styles.tabLabelActive]}>Add</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('scan')}>
           <View style={styles.scanTabBtn}>
             <Ionicons name="barcode-outline" size={28} color="white" />
           </View>
           <Text style={[styles.tabLabel, activeTab === 'scan' && styles.tabLabelActive]}>Scan</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('shopping')}>
           <View>
             <Ionicons name={activeTab === 'shopping' ? 'cart' : 'cart-outline'} size={24} color={activeTab === 'shopping' ? '#27ae60' : '#999'} />
@@ -1185,12 +1143,10 @@ export default function App() {
           </View>
           <Text style={[styles.tabLabel, activeTab === 'shopping' && styles.tabLabelActive]}>Shopping</Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('profile')}>
           <Ionicons name={activeTab === 'profile' ? 'person' : 'person-outline'} size={24} color={activeTab === 'profile' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'profile' && styles.tabLabelActive]}>Profile</Text>
         </TouchableOpacity>
-
       </View>
 
     </View>
@@ -1222,7 +1178,7 @@ const styles = StyleSheet.create({
   item: { backgroundColor: 'white', padding: 12, borderRadius: 8, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
   itemLowStock: { backgroundColor: '#fff5f5', borderWidth: 1, borderColor: '#e74c3c' },
   itemImage: { width: 50, height: 50, borderRadius: 6 },
-  itemImagePlaceholder: { width: 50, height: 50, borderRadius: 6, backgroundColor: '#ddd' },
+  itemImagePlaceholder: { width: 50, height: 50, borderRadius: 6, backgroundColor: '#ddd', justifyContent: 'center', alignItems: 'center' },
   itemInfo: { flex: 1 },
   itemName: { fontSize: 13, color: '#2c3e50', marginBottom: 4 },
   itemTagRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
@@ -1316,4 +1272,19 @@ const styles = StyleSheet.create({
   saveNameBtn: { backgroundColor: '#27ae60', padding: 10, borderRadius: 8 },
   saveNameBtnText: { color: 'white', fontWeight: 'bold' },
   editNameLink: { color: '#27ae60', fontSize: 15, marginTop: 8, fontWeight: 'bold' },
+  // Item Detail Modal
+  imageModalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
+  imageModalCard: { backgroundColor: 'white', borderRadius: 20, padding: 24, width: '88%', alignItems: 'center' },
+  imageModalImage: { width: 220, height: 220, borderRadius: 12, marginBottom: 16 },
+  imageModalPlaceholder: { width: 220, height: 220, borderRadius: 12, backgroundColor: '#f4f4f4', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  imageModalName: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center', marginBottom: 10 },
+  imageModalInfoRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#f0f0f0' },
+  imageModalLabel: { fontSize: 14, color: '#999' },
+  imageModalValue: { fontSize: 14, fontWeight: 'bold', color: '#2c3e50' },
+  imageModalClose: { backgroundColor: '#2c3e50', paddingHorizontal: 32, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  imageModalCloseText: { color: 'white', fontWeight: 'bold', fontSize: 15 },
+  // Edit Item Modal
+  editModal: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  editModalCard: { backgroundColor: 'white', borderRadius: 16, padding: 24, width: '90%' },
+  editModalTitle: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50', marginBottom: 12 },
 });
