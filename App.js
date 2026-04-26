@@ -12,6 +12,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from './supabase';
 import AuthScreen from './AuthScreen';
 import HouseholdScreen from './HouseholdScreen';
+import * as Linking from 'expo-linking';
+import ResetPasswordScreen from './ResetPasswordScreen';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
@@ -44,6 +46,9 @@ export default function App() {
   const [user, setUser] = useState(null);               // Logged in user object
   const [householdId, setHouseholdId] = useState(null); // Current household ID
   const [checkingAuth, setCheckingAuth] = useState(true); // True while checking session on startup
+
+  // ── Password Reset State ────────────────────────────────────────────────
+  const [resetPasswordMode, setResetPasswordMode] = useState(false); // Shows reset screen when deep link opens app
 
   // ── Camera Permission ───────────────────────────────────────────────────
   const [permission, requestPermission] = useCameraPermissions();
@@ -86,6 +91,46 @@ export default function App() {
   // ── Refs ────────────────────────────────────────────────────────────────
   const scanned = useRef(false);     // Prevents duplicate barcode scans
   const cameraReady = useRef(false); // Delays scan detection until camera is ready
+
+  // ─── DEEP LINK HANDLER ─────────────────────────────────────────────────
+  // Catches homeinventory://reset-password links from the password reset email.
+  // Parses the access_token + refresh_token from the URL hash, sets a Supabase
+  // session, then shows the in-app ResetPasswordScreen.
+  useEffect(() => {
+    // App already open — listen for incoming links
+    const subscription = Linking.addEventListener('url', ({ url }) => {
+      handleDeepLink(url);
+    });
+    // App opened cold from the link
+    Linking.getInitialURL().then(url => {
+      if (url) handleDeepLink(url);
+    });
+    return () => subscription.remove();
+  }, []);
+
+  const handleDeepLink = async (url) => {
+    if (!url || !url.includes('reset-password')) return;
+    // Supabase puts tokens in the hash: homeinventory://reset-password#access_token=...
+    const fragment = url.split('#')[1];
+    if (!fragment) return;
+    const params = {};
+    fragment.split('&').forEach(pair => {
+      const [key, value] = pair.split('=');
+      if (key && value) params[key] = decodeURIComponent(value);
+    });
+    if (params.access_token && params.refresh_token && params.type === 'recovery') {
+      try {
+        const { error } = await supabase.auth.setSession({
+          access_token: params.access_token,
+          refresh_token: params.refresh_token,
+        });
+        if (error) throw error;
+        setResetPasswordMode(true);
+      } catch (e) {
+        Alert.alert('Reset link expired', 'Please request a new password reset email.');
+      }
+    }
+  };
 
   // ─── AUTH LISTENER ─────────────────────────────────────────────────────
   // Listens for auth state changes including session restore on startup
@@ -574,6 +619,7 @@ export default function App() {
 
   // ─── CONDITIONAL SCREENS ────────────────────────────────────────────────
 
+  // Show spinner while checking if user is logged in
   if (checkingAuth) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f4f4f4' }}>
@@ -582,9 +628,18 @@ export default function App() {
     );
   }
 
+  // Show password reset screen when opened via email reset link
+  if (resetPasswordMode) {
+    return <ResetPasswordScreen onComplete={() => {
+      setResetPasswordMode(false);
+      supabase.auth.signOut();
+    }} />;
+  }
+
   if (!user) return <AuthScreen />;
   if (!householdId) return <HouseholdScreen user={user} onHouseholdJoined={setHouseholdId} />;
 
+  // Show full screen camera when scan tab is active
   if (activeTab === 'scan' && scanning) {
     return (
       <View style={{ flex: 1 }}>
@@ -616,6 +671,7 @@ export default function App() {
     );
   }
 
+  // Show spinner while looking up product after scan
   if (activeTab === 'scan' && scanStatus) {
     return (
       <View style={styles.lookupScreen}>
@@ -722,17 +778,11 @@ export default function App() {
               keyExtractor={item => item.id}
               renderItem={({ item }) => (
                 <View style={[styles.compactItem, isLowStock(item.quantity) && styles.itemLowStock]}>
-                  {/* Category color dot */}
                   <View style={[styles.compactDot, { backgroundColor: getCategoryColor(item.category) }]} />
-                  {/* Product Name */}
                   <Text style={styles.compactName} numberOfLines={1}>{item.name}</Text>
-                  {/* Low stock indicator */}
                   {isLowStock(item.quantity) && (
-                    <Text style={styles.compactLowStock}>
-                      {parseInt(item.quantity) === 0 ? '⚠️' : '⚠️'}
-                    </Text>
+                    <Text style={styles.compactLowStock}>⚠️</Text>
                   )}
-                  {/* Quantity Controls */}
                   <View style={styles.qtyControls}>
                     <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, -1)}>
                       <Text style={styles.qtyBtnText}>−</Text>
@@ -744,7 +794,6 @@ export default function App() {
                       <Text style={styles.qtyBtnText}>+</Text>
                     </TouchableOpacity>
                   </View>
-                  {/* Delete */}
                   <TouchableOpacity onPress={() => deleteItem(item.id)}>
                     <Text style={styles.deleteBtn}>✕</Text>
                   </TouchableOpacity>
@@ -1039,7 +1088,6 @@ export default function App() {
                 <View style={styles.codeBadge}>
                   <Text style={styles.codeText}>{householdCode}</Text>
                 </View>
-                {/* Share button — opens native OS share sheet */}
                 <TouchableOpacity onPress={shareHouseholdCode} style={styles.shareBtn}>
                   <Ionicons name="share-outline" size={20} color="#27ae60" />
                 </TouchableOpacity>
@@ -1151,12 +1199,9 @@ export default function App() {
 
 // ─── STYLES ─────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  // Layout
   container: { flex: 1, backgroundColor: '#f4f4f4' },
   screen: { flex: 1, paddingTop: 60, paddingHorizontal: 20 },
   title: { fontSize: 26, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center', marginBottom: 16 },
-
-  // Inventory Screen
   searchBar: { backgroundColor: 'white', padding: 10, borderRadius: 8, fontSize: 14, marginBottom: 10, color: '#333' },
   filterSortRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   filterScroll: { flex: 1 },
@@ -1171,13 +1216,9 @@ const styles = StyleSheet.create({
   sortOptionActive: { backgroundColor: '#2c3e50' },
   sortOptionText: { fontSize: 14, color: '#333' },
   sortOptionTextActive: { color: 'white', fontWeight: 'bold' },
-
-  // Empty State
   emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60 },
   emptyStateIcon: { fontSize: 48, marginBottom: 12 },
   emptyStateText: { fontSize: 16, color: '#999', textAlign: 'center' },
-
-  // Inventory Item Card (full view)
   item: { backgroundColor: 'white', padding: 12, borderRadius: 8, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
   itemLowStock: { backgroundColor: '#fff5f5', borderWidth: 1, borderColor: '#e74c3c' },
   itemImage: { width: 50, height: 50, borderRadius: 6 },
@@ -1189,30 +1230,22 @@ const styles = StyleSheet.create({
   categoryTagText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
   lowStockTag: { backgroundColor: '#e74c3c', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
   lowStockTagText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
-
-  // Expiration date tags
   expirationTag: { backgroundColor: '#27ae60', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
   expirationTagText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
   expiringSoonTag: { backgroundColor: '#f39c12', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
   expiringSoonTagText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
   expiredTag: { backgroundColor: '#e74c3c', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
   expiredTagText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
-
-  // Compact List View
   compactItem: { backgroundColor: 'white', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, marginBottom: 6, flexDirection: 'row', alignItems: 'center', gap: 10 },
   compactDot: { width: 10, height: 10, borderRadius: 5 },
   compactName: { flex: 1, fontSize: 14, color: '#2c3e50', fontWeight: '500' },
   compactLowStock: { fontSize: 14 },
-
-  // Quantity Controls
   qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   qtyBtn: { backgroundColor: '#f0f0f0', width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
   qtyBtnText: { fontSize: 16, color: '#2c3e50', fontWeight: 'bold' },
   qtyNumber: { fontSize: 15, fontWeight: 'bold', color: '#2c3e50', minWidth: 20, textAlign: 'center' },
   qtyLow: { color: '#e74c3c' },
   deleteBtn: { color: '#e74c3c', fontSize: 16, fontWeight: 'bold' },
-
-  // Add Item Screen
   addContent: { paddingBottom: 40 },
   addImageRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 16 },
   addPreviewImage: { width: 100, height: 100, borderRadius: 12 },
@@ -1230,8 +1263,6 @@ const styles = StyleSheet.create({
   confirmBtnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   cancelFormBtn: { padding: 14, alignItems: 'center', marginTop: 8 },
   cancelFormBtnText: { color: '#999', fontSize: 15 },
-
-  // Shopping List Screen
   doneShoppingBtn: { backgroundColor: '#27ae60', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 14, borderRadius: 10, marginBottom: 16, gap: 8 },
   doneShoppingText: { color: 'white', fontSize: 15, fontWeight: 'bold' },
   shoppingCategoryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, paddingLeft: 10, marginTop: 8, marginBottom: 4, borderLeftWidth: 4 },
@@ -1246,8 +1277,6 @@ const styles = StyleSheet.create({
   restockQtyRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   restockQtyLabel: { fontSize: 12, color: '#999' },
   restockQtyInput: { backgroundColor: '#f4f4f4', width: 40, padding: 6, borderRadius: 6, fontSize: 13, textAlign: 'center' },
-
-  // Camera / Scan Screen
   scanOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   scanTitle: { color: 'white', fontSize: 20, fontWeight: 'bold', marginBottom: 30 },
   scanBox: { width: 260, height: 160, borderWidth: 3, borderColor: '#27ae60', borderRadius: 12, marginBottom: 20 },
@@ -1255,12 +1284,8 @@ const styles = StyleSheet.create({
   scanCancelRow: { paddingBottom: 40, alignItems: 'center' },
   scanCancelBtn: { backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 30, paddingVertical: 14, borderRadius: 30 },
   scanCancelText: { color: 'white', fontSize: 16 },
-
-  // Product Lookup Loading Screen
   lookupScreen: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f4f4f4' },
   lookupText: { marginTop: 16, fontSize: 16, color: '#2c3e50' },
-
-  // Bottom Tab Bar
   tabBar: { flexDirection: 'row', backgroundColor: 'white', borderTopWidth: 1, borderTopColor: '#e0e0e0', paddingBottom: 24, paddingTop: 10 },
   tabItem: { flex: 1, alignItems: 'center', position: 'relative' },
   tabLabel: { fontSize: 11, color: '#999' },
@@ -1268,8 +1293,6 @@ const styles = StyleSheet.create({
   scanTabBtn: { width: 52, height: 52, borderRadius: 26, backgroundColor: '#27ae60', justifyContent: 'center', alignItems: 'center', marginTop: -20, shadowColor: '#27ae60', shadowOpacity: 0.4, shadowRadius: 8, elevation: 6 },
   badge: { position: 'absolute', top: 0, right: -6, backgroundColor: '#e74c3c', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center' },
   badgeText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
-
-  // Profile Screen
   profileCard: { backgroundColor: 'white', borderRadius: 12, padding: 20, marginBottom: 16 },
   profileEmail: { fontSize: 16, color: '#2c3e50', fontWeight: 'bold', marginTop: 12 },
   sectionHeader: { fontSize: 13, fontWeight: 'bold', color: '#999', marginBottom: 8, marginLeft: 4, textTransform: 'uppercase', letterSpacing: 1 },
