@@ -14,10 +14,14 @@ import AuthScreen from './AuthScreen';
 import HouseholdScreen from './HouseholdScreen';
 import * as Linking from 'expo-linking';
 import ResetPasswordScreen from './ResetPasswordScreen';
+import {
+  sanitizeText, sanitizeBarcode, validateQuantity,
+  validateThreshold, validateExpirationDate, friendlyError,
+  MAX_PRODUCT_NAME_LENGTH, MAX_DISPLAY_NAME_LENGTH,
+} from './validators';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
-// Top-level categories — used for inventory filter tabs and shopping list grouping
 const MAIN_CATEGORIES = [
   { label: 'Food', value: 'food', color: '#e67e22' },
   { label: 'Drinks', value: 'drinks', color: '#16a085' },
@@ -26,7 +30,6 @@ const MAIN_CATEGORIES = [
   { label: 'Other', value: 'other', color: '#7f8c8d' },
 ];
 
-// Food subcategories — shown when Food is selected in the form
 const FOOD_SUBCATEGORIES = [
   { label: 'Produce', value: 'produce', color: '#27ae60' },
   { label: 'Dairy', value: 'dairy', color: '#f39c12' },
@@ -38,7 +41,6 @@ const FOOD_SUBCATEGORIES = [
   { label: 'Condiments', value: 'condiments', color: '#8e44ad' },
 ];
 
-// Drinks subcategories — shown when Drinks is selected in the form
 const DRINKS_SUBCATEGORIES = [
   { label: 'Water', value: 'water', color: '#3498db' },
   { label: 'Juice', value: 'juice', color: '#e67e22' },
@@ -47,14 +49,12 @@ const DRINKS_SUBCATEGORIES = [
   { label: 'Alcohol', value: 'alcohol', color: '#8e44ad' },
 ];
 
-// Flat list of all categories for color/label lookup
 const ALL_CATEGORIES = [
   ...MAIN_CATEGORIES,
   ...FOOD_SUBCATEGORIES,
   ...DRINKS_SUBCATEGORIES,
 ];
 
-// Maps any category value to its parent — used for filtering and grouping
 const CATEGORY_PARENT_MAP = {
   food: 'food', produce: 'food', dairy: 'food', meat: 'food',
   snacks: 'food', frozen: 'food', bakery: 'food', canned: 'food', condiments: 'food',
@@ -125,7 +125,8 @@ export default function App() {
   const [newName, setNewName] = useState('');
   const [profileAvatar, setProfileAvatar] = useState(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
-  const [enlargedAvatar, setEnlargedAvatar] = useState(null); // URL of avatar being viewed full size
+  const [enlargedAvatar, setEnlargedAvatar] = useState(null);
+  const handleHouseholdJoined = (id) => {setHouseholdId(id);loadHousehold(user.id);};
 
   // ── Item Detail + Edit State ────────────────────────────────────────────
   const [selectedItem, setSelectedItem] = useState(null);
@@ -133,8 +134,8 @@ export default function App() {
   const [editName, setEditName] = useState('');
   const [editCategory, setEditCategory] = useState('');
   const [editThreshold, setEditThreshold] = useState('');
-  const [linkingBarcode, setLinkingBarcode] = useState(null); // Barcode waiting to be linked
-  const [linkSearch, setLinkSearch] = useState('');           // Search text in link modal
+  const [linkingBarcode, setLinkingBarcode] = useState(null);
+  const [linkSearch, setLinkSearch] = useState('');
 
   // ── Refs ────────────────────────────────────────────────────────────────
   const scanned = useRef(false);
@@ -182,6 +183,15 @@ export default function App() {
           setUser(session?.user ?? null);
           setCheckingAuth(false);
         } else {
+          // Clear all stale state first, then set user last.
+          // setUser being last ensures loadHousehold fires with a clean slate.
+          setHouseholdId(null);
+          setHouseholdCode('');
+          setHouseholdMembers([]);
+          setProfileName('');
+          setProfileAvatar(null);
+          setInventory([]);
+          setActiveTab('inventory');
           setUser(session?.user ?? null);
         }
       }
@@ -189,7 +199,13 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  useEffect(() => { if (user) loadHousehold(); }, [user]);
+  // Triggered whenever user changes — passes userId explicitly to avoid stale closure
+  useEffect(() => {
+    if (user) {
+      setLoading(true);
+      loadHousehold(user.id);
+    }
+  }, [user]);
 
   useEffect(() => {
     if (householdId) {
@@ -217,49 +233,117 @@ export default function App() {
 
   // ─── HOUSEHOLD FUNCTIONS ────────────────────────────────────────────────
 
-  const loadHousehold = async () => {
+  // Takes userId as a parameter so it never reads from a stale closure
+  const loadHousehold = async (userId) => {
     try {
-      const { data } = await supabase.from('household_members').select('household_id').eq('user_id', user.id).single();
-      if (data) {
-        setHouseholdId(data.household_id);
-        const { data: household } = await supabase.from('households').select('code').eq('id', data.household_id).single();
-        if (household) setHouseholdCode(household.code);
-        const { data: myProfile } = await supabase.from('profiles').select('full_name, avatar_url').eq('id', user.id).single();
-        if (myProfile) { setProfileName(myProfile.full_name || ''); setProfileAvatar(myProfile.avatar_url || null); }
-        const { data: members } = await supabase.from('household_members').select('user_id, joined_at').eq('household_id', data.household_id);
-        if (members) {
-          const { data: profiles } = await supabase.from('profiles').select('id, full_name, avatar_url').in('id', members.map(m => m.user_id));
-          setHouseholdMembers(members.map(member => ({
-            ...member,
-            full_name: profiles?.find(p => p.id === member.user_id)?.full_name || 'Unknown',
-            avatar_url: profiles?.find(p => p.id === member.user_id)?.avatar_url || null,
-          })));
-        }
+      // Retry up to 3 times with 600ms gap — gives the session time to settle after sign-in
+      let memberData = null;
+      for (let i = 0; i < 3; i++) {
+        const { data } = await supabase
+          .from('household_members')
+          .select('household_id')
+          .eq('user_id', userId)
+          .single();
+        if (data) { memberData = data; break; }
+        await new Promise(r => setTimeout(r, 600));
       }
-    } catch (e) { console.log('No household found'); }
+      if (!memberData) return;
+
+      setHouseholdId(memberData.household_id);
+
+      const { data: household } = await supabase
+        .from('households')
+        .select('code')
+        .eq('id', memberData.household_id)
+        .single();
+      if (household) setHouseholdCode(household.code);
+
+      const { data: myProfile } = await supabase
+        .from('profiles')
+        .select('full_name, avatar_url')
+        .eq('id', userId)
+        .single();
+      if (myProfile) {
+        setProfileName(myProfile.full_name || '');
+        setProfileAvatar(myProfile.avatar_url || null);
+      }
+
+      const { data: members } = await supabase
+        .from('household_members')
+        .select('user_id, joined_at')
+        .eq('household_id', memberData.household_id);
+
+      if (members) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, full_name, avatar_url')
+          .in('id', members.map(m => m.user_id));
+        setHouseholdMembers(members.map(member => ({
+          ...member,
+          full_name: profiles?.find(p => p.id === member.user_id)?.full_name || 'Unknown',
+          avatar_url: profiles?.find(p => p.id === member.user_id)?.avatar_url || null,
+        })));
+      }
+    } catch (e) { console.log('loadHousehold error:', e); }
+  };
+
+  const deleteAccount = async () => {
+    try {
+      const { error } = await supabase.functions.invoke('delete-user');
+      if (error) throw error;
+      await supabase.auth.signOut();
+    } catch (e) {
+      Alert.alert('Error', friendlyError(e, 'Failed to delete account. Please try again.'));
+    }
   };
 
   const saveName = async () => {
+    const sanitized = sanitizeText(newName, MAX_DISPLAY_NAME_LENGTH);
+    if (!sanitized) {
+      Alert.alert('Invalid Name', 'Please enter a display name.');
+      return;
+    }
     try {
       const { data: existing } = await supabase.from('profiles').select('id').eq('id', user.id).single();
-      if (existing) { await supabase.from('profiles').update({ full_name: newName }).eq('id', user.id); }
-      else { await supabase.from('profiles').insert([{ id: user.id, full_name: newName }]); }
-      setProfileName(newName); setEditingName(false); loadHousehold();
-    } catch (e) { Alert.alert('Failed to save name.'); }
+      if (existing) {
+        await supabase.from('profiles').update({ full_name: sanitized }).eq('id', user.id);
+      } else {
+        await supabase.from('profiles').insert([{ id: user.id, full_name: sanitized }]);
+      }
+      setProfileName(sanitized);
+      setNewName(sanitized);
+      setEditingName(false);
+      loadHousehold(user.id);
+    } catch (e) {
+      Alert.alert('Error', friendlyError(e, 'Failed to save your name. Please try again.'));
+    }
   };
 
   const saveItemEdit = async () => {
-    if (!editName.trim()) { Alert.alert('Please enter a product name.'); return; }
+    const sanitizedName = sanitizeText(editName, MAX_PRODUCT_NAME_LENGTH);
+    if (!sanitizedName) {
+      Alert.alert('Invalid Name', 'Please enter a product name.');
+      return;
+    }
+    const sanitizedThreshold = validateThreshold(editThreshold);
     try {
       const { error } = await supabase.from('inventory')
-        .update({ name: editName, category: editCategory, low_stock_threshold: editThreshold ? parseInt(editThreshold) : null })
+        .update({
+          name: sanitizedName,
+          category: editCategory,
+          low_stock_threshold: sanitizedThreshold,
+        })
         .eq('id', editingItem.id);
       if (error) throw error;
       setInventory(prev => prev.map(i =>
-        i.id === editingItem.id ? { ...i, name: editName, category: editCategory, low_stock_threshold: editThreshold ? parseInt(editThreshold) : null } : i
+        i.id === editingItem.id
+          ? { ...i, name: sanitizedName, category: editCategory, low_stock_threshold: sanitizedThreshold }
+          : i
       ));
       setEditingItem(null);
-    } catch (e) { Alert.alert('Failed to save changes.'); }
+    } catch (e) {
+      Alert.alert('Error', friendlyError(e, 'Failed to save changes. Please try again.'));
+    }
   };
 
   const shareHouseholdCode = async () => {
@@ -320,16 +404,23 @@ export default function App() {
   };
 
   const addItem = async () => {
-    if (productName.trim() === '') { Alert.alert('Please enter a product name.'); return; }
+    const sanitizedName = sanitizeText(productName, MAX_PRODUCT_NAME_LENGTH);
+    if (!sanitizedName) { Alert.alert('Invalid Name', 'Please enter a product name.'); return; }
+    const sanitizedQty = validateQuantity(quantity);
+    if (sanitizedQty === null) { Alert.alert('Invalid Quantity', 'Please enter a valid quantity (0–9999).'); return; }
+    const dateResult = validateExpirationDate(expirationDate);
+    if (dateResult === false) { Alert.alert('Invalid Date', 'Please enter a date in MM/DD/YYYY or YYYY-MM-DD format, or leave it blank.'); return; }
+    const sanitizedThreshold = validateThreshold(lowStockThreshold);
+    const sanitizedBarcode = sanitizeBarcode(currentBarcode);
+    const storedImageUrl = await uploadInventoryImage(productImage);
     const newItem = {
-      id: Date.now().toString(), barcode: currentBarcode, name: productName, quantity: quantity,
-      image: productImage, category: selectedCategory, household_id: householdId,
-      expiration_date: expirationDate.trim() || null,
-      low_stock_threshold: lowStockThreshold ? parseInt(lowStockThreshold) : null,
+      id: Date.now().toString(), barcode: sanitizedBarcode, name: sanitizedName,
+      quantity: sanitizedQty.toString(), image: storedImageUrl, category: selectedCategory,
+      household_id: householdId, expiration_date: dateResult || null, low_stock_threshold: sanitizedThreshold,
     };
-    if (currentBarcode) {
-      saveToLocalCache(currentBarcode, productName, selectedCategory, productImage);
-      saveToSharedBarcodeCache(currentBarcode, productName, selectedCategory, productImage);
+    if (sanitizedBarcode) {
+      saveToLocalCache(sanitizedBarcode, sanitizedName, selectedCategory, storedImageUrl);
+      saveToSharedBarcodeCache(sanitizedBarcode, sanitizedName, selectedCategory, storedImageUrl);
     }
     try {
       const { error } = await supabase.from('inventory').insert([newItem]);
@@ -338,7 +429,7 @@ export default function App() {
       setProductName(''); setQuantity('1'); setProductImage(null);
       setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setLowStockThreshold('2');
       setActiveTab('inventory');
-    } catch (e) { Alert.alert('Failed to add item: ' + JSON.stringify(e)); }
+    } catch (e) { Alert.alert('Error', friendlyError(e, 'Failed to add item. Please try again.')); }
   };
 
   const deleteItem = async (id) => {
@@ -409,12 +500,32 @@ export default function App() {
       await supabase.from('barcode_cache').upsert([{ barcode, name, category, image_url: imageUrl, created_by: user.id }], { onConflict: 'barcode', ignoreDuplicates: true });
     } catch (e) { console.log('Failed to save to shared cache', e); }
   };
-  // Links a scanned barcode to an existing inventory item the user picks
+
+  const uploadInventoryImage = async (uri) => {
+    if (!uri) return null;
+    if (uri.startsWith('http')) return uri;
+    try {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const reader = new FileReader();
+      reader.readAsArrayBuffer(blob);
+      await new Promise((resolve) => { reader.onloadend = resolve; });
+      const filePath = `${user.id}-${Date.now()}.jpg`;
+      const { error: uploadError } = await supabase.storage
+        .from('product-images')
+        .upload(filePath, reader.result, { contentType: 'image/jpeg', upsert: false });
+      if (uploadError) throw uploadError;
+      const { data: { publicUrl } } = supabase.storage.from('product-images').getPublicUrl(filePath);
+      return publicUrl;
+    } catch (e) {
+      console.warn('Image upload failed, proceeding without image:', e);
+      return null;
+    }
+  };
+
   const linkBarcodeToItem = async (item) => {
     try {
-      const { error } = await supabase.from('inventory')
-        .update({ barcode: linkingBarcode })
-        .eq('id', item.id);
+      const { error } = await supabase.from('inventory').update({ barcode: linkingBarcode }).eq('id', item.id);
       if (error) throw error;
       setInventory(prev => prev.map(i => i.id === item.id ? { ...i, barcode: linkingBarcode } : i));
       saveToLocalCache(linkingBarcode, item.name, item.category, item.image);
@@ -422,9 +533,7 @@ export default function App() {
       setLinkingBarcode(null);
       setLinkSearch('');
       Alert.alert('✓ Linked!', `${item.name} is now linked to this barcode. Future scans will recognize it automatically.`);
-    } catch (e) {
-      Alert.alert('Failed to link barcode.');
-    }
+    } catch (e) { Alert.alert('Failed to link barcode.'); }
   };
 
   // ─── BARCODE SCANNING ───────────────────────────────────────────────────
@@ -432,9 +541,13 @@ export default function App() {
   const handleBarcode = ({ data }) => {
     if (scanned.current) return;
     if (!cameraReady.current) return;
-    scanned.current = true; setScanning(false);
-    setScanStatus('Looking up product...'); setActiveTab('scan');
-    lookupProduct(data);
+    const sanitized = sanitizeBarcode(data);
+    if (!sanitized) return;
+    scanned.current = true;
+    setScanning(false);
+    setScanStatus('Looking up product...');
+    setActiveTab('scan');
+    lookupProduct(sanitized);
   };
 
   const lookupProduct = async (barcode) => {
@@ -520,12 +633,10 @@ export default function App() {
             { text: 'Link to Existing', onPress: () => { setLinkingBarcode(barcode); setActiveTab('inventory'); } },
             { text: 'Cancel', style: 'cancel', onPress: () => setActiveTab('inventory') }
           ]);
-        
       });
   };
 
   // ─── CATEGORY DETECTION ─────────────────────────────────────────────────
-  // Updated to return subcategories where possible
 
   const detectCategory = (tags) => {
     if (!tags) return 'other';
@@ -589,19 +700,16 @@ export default function App() {
 
   // ─── HELPER FUNCTIONS ───────────────────────────────────────────────────
 
-  // Returns color for any category value (main or subcategory)
   const getCategoryColor = (value) => {
     const cat = ALL_CATEGORIES.find(c => c.value === value);
     return cat ? cat.color : '#7f8c8d';
   };
 
-  // Returns display label for any category value
   const getCategoryLabel = (value) => {
     const cat = ALL_CATEGORIES.find(c => c.value === value);
     return cat ? cat.label : 'Other';
   };
 
-  // Returns the parent category value (for filtering/grouping)
   const getParentCategory = (value) => CATEGORY_PARENT_MAP[value] || 'other';
 
   const isLowStock = (qty, item) => {
@@ -615,7 +723,6 @@ export default function App() {
       result = result.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()));
     }
     if (filterCategory !== 'all') {
-      // Filter matches exact value OR parent category — so 'food' filter catches 'produce', 'dairy', etc.
       result = result.filter(item => item.category === filterCategory || getParentCategory(item.category) === filterCategory);
     }
     if (sortBy === 'name') result.sort((a, b) => a.name.localeCompare(b.name));
@@ -624,70 +731,43 @@ export default function App() {
     return result;
   };
 
-  // Shopping list groups by parent category
   const shoppingList = inventory.filter(item => parseInt(item.quantity) === 0);
   const shoppingListParents = MAIN_CATEGORIES.filter(cat =>
     shoppingList.some(item => getParentCategory(item.category) === cat.value)
   );
 
-  // Returns true if selected category is a food or drink type (shows expiration date field)
   const showExpirationField = () => {
     const parent = getParentCategory(selectedCategory);
     return parent === 'food' || parent === 'drinks';
   };
 
   // ─── CATEGORY SELECTOR COMPONENT ───────────────────────────────────────
-  // Two-level selector: pick main category, then optional subcategory
-  // Used in both Add Item and Edit Item
 
   const CategorySelector = ({ selected, onSelect }) => {
     const parent = getParentCategory(selected);
     return (
       <View>
-        {/* Row 1: Main categories */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
           {MAIN_CATEGORIES.map(cat => (
-            <TouchableOpacity
-              key={cat.value}
-              style={[styles.categoryBtn, { backgroundColor: parent === cat.value ? cat.color : '#ddd', marginRight: 8 }]}
-              onPress={() => onSelect(cat.value)}
-            >
-              <Text numberOfLines={1} style={[styles.categoryBtnText, { color: parent === cat.value ? 'white' : '#555' }]}>
-                {cat.label}
-              </Text>
+            <TouchableOpacity key={cat.value} style={[styles.categoryBtn, { backgroundColor: parent === cat.value ? cat.color : '#ddd', marginRight: 8 }]} onPress={() => onSelect(cat.value)}>
+              <Text numberOfLines={1} style={[styles.categoryBtnText, { color: parent === cat.value ? 'white' : '#555' }]}>{cat.label}</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
-
-        {/* Row 2: Food subcategories */}
         {parent === 'food' && (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
             {FOOD_SUBCATEGORIES.map(cat => (
-              <TouchableOpacity
-                key={cat.value}
-                style={[styles.categoryBtn, { backgroundColor: selected === cat.value ? cat.color : '#eee', marginRight: 8 }]}
-                onPress={() => onSelect(cat.value)}
-              >
-                <Text numberOfLines={1} style={[styles.categoryBtnText, { color: selected === cat.value ? 'white' : '#555' }]}>
-                  {cat.label}
-                </Text>
+              <TouchableOpacity key={cat.value} style={[styles.categoryBtn, { backgroundColor: selected === cat.value ? cat.color : '#eee', marginRight: 8 }]} onPress={() => onSelect(cat.value)}>
+                <Text numberOfLines={1} style={[styles.categoryBtnText, { color: selected === cat.value ? 'white' : '#555' }]}>{cat.label}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
         )}
-
-        {/* Row 3: Drinks subcategories */}
         {parent === 'drinks' && (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
             {DRINKS_SUBCATEGORIES.map(cat => (
-              <TouchableOpacity
-                key={cat.value}
-                style={[styles.categoryBtn, { backgroundColor: selected === cat.value ? cat.color : '#eee', marginRight: 8 }]}
-                onPress={() => onSelect(cat.value)}
-              >
-                <Text numberOfLines={1} style={[styles.categoryBtnText, { color: selected === cat.value ? 'white' : '#555' }]}>
-                  {cat.label}
-                </Text>
+              <TouchableOpacity key={cat.value} style={[styles.categoryBtn, { backgroundColor: selected === cat.value ? cat.color : '#eee', marginRight: 8 }]} onPress={() => onSelect(cat.value)}>
+                <Text numberOfLines={1} style={[styles.categoryBtnText, { color: selected === cat.value ? 'white' : '#555' }]}>{cat.label}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
@@ -707,7 +787,7 @@ export default function App() {
   }
 
   if (!user) return <AuthScreen />;
-  if (!householdId) return <HouseholdScreen user={user} onHouseholdJoined={setHouseholdId} />;
+  if (!householdId) return <HouseholdScreen user={user} onHouseholdJoined={handleHouseholdJoined} />;
 
   if (activeTab === 'scan' && scanning) {
     return (
@@ -744,8 +824,6 @@ export default function App() {
         <View style={styles.screen}>
           <Text style={styles.title}>Home Inventory</Text>
           <TextInput style={styles.searchBar} placeholder="🔍 Search inventory..." placeholderTextColor="#999" value={searchQuery} onChangeText={setSearchQuery} />
-
-          {/* Filter tabs use MAIN_CATEGORIES only */}
           <View style={styles.filterSortRow}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
               <TouchableOpacity style={[styles.filterTab, filterCategory === 'all' && styles.filterTabActive]} onPress={() => setFilterCategory('all')}>
@@ -764,7 +842,6 @@ export default function App() {
               <Text style={styles.sortBtnText}>⇅ Sort</Text>
             </TouchableOpacity>
           </View>
-
           {showSortOptions && (
             <View style={styles.sortDropdown}>
               {[{ label: 'Name (A-Z)', value: 'name' }, { label: 'Category', value: 'category' }, { label: 'Low Stock First', value: 'lowstock' }].map(option => (
@@ -774,7 +851,6 @@ export default function App() {
               ))}
             </View>
           )}
-
           {loading ? (
             <View style={styles.emptyState}><ActivityIndicator size="large" color="#2c3e50" /><Text style={styles.emptyStateText}>Loading inventory...</Text></View>
           ) : getFilteredAndSorted().length === 0 ? (
@@ -848,19 +924,19 @@ export default function App() {
             </View>
           </View>
           <Text style={styles.formLabel}>Product Name</Text>
-          <TextInput style={styles.formInput} placeholder="e.g. Bounty Paper Towels" placeholderTextColor="#999" value={productName} onChangeText={setProductName} />
+          <TextInput style={styles.formInput} placeholder="e.g. Bounty Paper Towels" placeholderTextColor="#999" value={productName} onChangeText={setProductName} maxLength={100} />
           <Text style={styles.formLabel}>Quantity</Text>
-          <TextInput style={[styles.formInput, { width: 80 }]} placeholder="1" placeholderTextColor="#999" value={quantity} onChangeText={setQuantity} keyboardType="numeric" />
+          <TextInput style={[styles.formInput, { width: 80 }]} placeholder="1" placeholderTextColor="#999" value={quantity} onChangeText={setQuantity} keyboardType="numeric" maxLength={4} />
           <Text style={styles.formLabel}>Category</Text>
           <CategorySelector selected={selectedCategory} onSelect={setSelectedCategory} />
           {showExpirationField() && (
             <>
               <Text style={styles.formLabel}>Expiration Date <Text style={{ color: '#999', fontWeight: 'normal' }}>(optional)</Text></Text>
-              <TextInput style={styles.formInput} placeholder="MM/DD/YYYY" placeholderTextColor="#999" value={expirationDate} onChangeText={setExpirationDate} />
+              <TextInput style={styles.formInput} placeholder="MM/DD/YYYY" placeholderTextColor="#999" value={expirationDate} onChangeText={setExpirationDate} maxLength={10} />
             </>
           )}
           <Text style={styles.formLabel}>Low Stock Alert <Text style={{ color: '#999', fontWeight: 'normal' }}>(alert when qty reaches this)</Text></Text>
-          <TextInput style={[styles.formInput, { width: 80 }]} placeholder="2" placeholderTextColor="#999" value={lowStockThreshold} onChangeText={setLowStockThreshold} keyboardType="numeric" />
+          <TextInput style={[styles.formInput, { width: 80 }]} placeholder="2" placeholderTextColor="#999" value={lowStockThreshold} onChangeText={setLowStockThreshold} keyboardType="numeric" maxLength={3} />
           <TouchableOpacity style={styles.confirmBtn} onPress={addItem}><Text style={styles.confirmBtnText}>Add to Inventory</Text></TouchableOpacity>
           <TouchableOpacity style={styles.cancelFormBtn} onPress={() => { setProductName(''); setQuantity('1'); setProductImage(null); setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setActiveTab('inventory'); }}>
             <Text style={styles.cancelFormBtnText}>Cancel</Text>
@@ -893,7 +969,6 @@ export default function App() {
                   <Text style={styles.doneShoppingText}>Done Shopping ({Object.values(checkedItems).filter(v => v).length} items)</Text>
                 </TouchableOpacity>
               )}
-              {/* Shopping list grouped by MAIN parent category */}
               <FlatList
                 data={shoppingListParents} keyExtractor={cat => cat.value}
                 renderItem={({ item: cat }) => (
@@ -940,7 +1015,7 @@ export default function App() {
             <Text style={styles.profileEmail}>{user.email}</Text>
             {editingName ? (
               <View style={styles.editNameRow}>
-                <TextInput style={styles.editNameInput} value={newName} onChangeText={setNewName} placeholder="Enter your name" placeholderTextColor="#999" autoFocus />
+                <TextInput style={styles.editNameInput} value={newName} onChangeText={setNewName} placeholder="Enter your name" placeholderTextColor="#999" autoFocus maxLength={50} />
                 <TouchableOpacity style={styles.saveNameBtn} onPress={saveName}><Text style={styles.saveNameBtnText}>Save</Text></TouchableOpacity>
               </View>
             ) : (
@@ -983,6 +1058,18 @@ export default function App() {
           }}>
             <Text style={styles.logoutBtnText}>Log Out</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={styles.deleteAccountBtn} onPress={() => {
+            Alert.alert(
+              'Delete Account',
+              'This will permanently delete your account and all your data. This cannot be undone.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Delete', style: 'destructive', onPress: deleteAccount }
+              ]
+            );
+          }}>
+            <Text style={styles.deleteAccountBtnText}>Delete Account</Text>
+          </TouchableOpacity>
           <View style={{ height: 40 }} />
         </ScrollView>
       )}
@@ -1020,11 +1107,11 @@ export default function App() {
         <ScrollView contentContainerStyle={styles.editModalBackdrop}>
           <View style={styles.editModalCard}>
             <Text style={styles.editModalTitle}>Edit Item</Text>
-            <TextInput style={styles.formInput} value={editName} onChangeText={setEditName} placeholder="Product name" placeholderTextColor="#999" autoFocus />
+            <TextInput style={styles.formInput} value={editName} onChangeText={setEditName} placeholder="Product name" placeholderTextColor="#999" autoFocus maxLength={100} />
             <Text style={[styles.formLabel, { marginTop: 12 }]}>Category</Text>
             <CategorySelector selected={editCategory} onSelect={setEditCategory} />
             <Text style={[styles.formLabel, { marginTop: 12 }]}>Low Stock Alert</Text>
-            <TextInput style={[styles.formInput, { width: 80 }]} value={editThreshold} onChangeText={setEditThreshold} placeholder="2" placeholderTextColor="#999" keyboardType="numeric" />
+            <TextInput style={[styles.formInput, { width: 80 }]} value={editThreshold} onChangeText={setEditThreshold} placeholder="2" placeholderTextColor="#999" keyboardType="numeric" maxLength={3} />
             <TouchableOpacity style={styles.confirmBtn} onPress={saveItemEdit}><Text style={styles.confirmBtnText}>Save Changes</Text></TouchableOpacity>
             <TouchableOpacity style={styles.cancelFormBtn} onPress={() => setEditingItem(null)}><Text style={styles.cancelFormBtnText}>Cancel</Text></TouchableOpacity>
           </View>
@@ -1039,32 +1126,19 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
-      {/* ── LINK BARCODE MODAL ──
-          Opens when user scans an unrecognized barcode and picks "Link to Existing".
-          Shows a searchable list of inventory — tapping an item links the barcode to it. */}
+      {/* ── LINK BARCODE MODAL ── */}
       <Modal visible={!!linkingBarcode} transparent animationType="slide" onRequestClose={() => { setLinkingBarcode(null); setLinkSearch(''); }}>
         <View style={styles.linkModalBackdrop}>
           <View style={styles.linkModalCard}>
             <Text style={styles.linkModalTitle}>Link to Existing Item</Text>
             <Text style={styles.linkModalSubtitle}>Which item does this barcode belong to?</Text>
-            <TextInput
-              style={[styles.searchBar, { marginBottom: 12 }]}
-              placeholder="🔍 Search items..."
-              placeholderTextColor="#999"
-              value={linkSearch}
-              onChangeText={setLinkSearch}
-              autoFocus
-            />
+            <TextInput style={[styles.searchBar, { marginBottom: 12 }]} placeholder="🔍 Search items..." placeholderTextColor="#999" value={linkSearch} onChangeText={setLinkSearch} autoFocus />
             <ScrollView style={{ maxHeight: 360 }}>
               {inventory
                 .filter(item => item.name.toLowerCase().includes(linkSearch.toLowerCase()))
                 .sort((a, b) => a.name.localeCompare(b.name))
                 .map(item => (
-                  <TouchableOpacity
-                    key={item.id}
-                    style={styles.linkModalItem}
-                    onPress={() => linkBarcodeToItem(item)}
-                  >
+                  <TouchableOpacity key={item.id} style={styles.linkModalItem} onPress={() => linkBarcodeToItem(item)}>
                     {item.image
                       ? <Image source={{ uri: item.image }} style={styles.linkModalItemImage} />
                       : <View style={styles.linkModalItemImagePlaceholder}><Ionicons name="image-outline" size={16} color="#bbb" /></View>}
@@ -1173,7 +1247,6 @@ const styles = StyleSheet.create({
   imgBtnText: { color: 'white', fontSize: 13 },
   formLabel: { fontSize: 14, fontWeight: 'bold', color: '#2c3e50', marginBottom: 6, marginTop: 12 },
   formInput: { backgroundColor: 'white', padding: 12, borderRadius: 8, fontSize: 15, color: '#333' },
-  // Category buttons — fixed width + single line, used in horizontal ScrollView
   categoryBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, alignItems: 'center', justifyContent: 'center', minWidth: 80 },
   categoryBtnText: { fontSize: 12, fontWeight: 'bold', textAlign: 'center' },
   confirmBtn: { backgroundColor: '#27ae60', padding: 16, borderRadius: 10, alignItems: 'center', marginTop: 24 },
@@ -1260,4 +1333,6 @@ const styles = StyleSheet.create({
   linkModalItemImagePlaceholder: { width: 40, height: 40, borderRadius: 6, backgroundColor: '#ddd', justifyContent: 'center', alignItems: 'center' },
   linkModalItemName: { fontSize: 14, color: '#2c3e50', fontWeight: '500' },
   linkModalItemCategory: { fontSize: 11, color: '#999', marginTop: 2 },
+  deleteAccountBtn: { borderWidth: 1, borderColor: '#e74c3c', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 16 },
+  deleteAccountBtnText: { color: '#e74c3c', fontSize: 16, fontWeight: 'bold' },
 });
