@@ -22,6 +22,7 @@ import {
 import NetInfo from '@react-native-community/netinfo';
 import * as FileSystem from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
+import OnboardingScreen from './OnboardingScreen';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
@@ -149,6 +150,9 @@ export default function App() {
   //Offline State
   const [isOffline, setIsOffline] = useState(false);
 
+  //Onboarding State
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
   // ─── DEEP LINK HANDLER ─────────────────────────────────────────────────
   useEffect(() => {
     const subscription = Linking.addEventListener('url', ({ url }) => {
@@ -219,6 +223,9 @@ export default function App() {
     if (householdId) {
       loadInventory();
       requestNotificationPermission();
+      AsyncStorage.getItem('hasSeenOnboarding').then(seen => {
+        if (!seen) setShowOnboarding(true);
+      });
       const channel = supabase
         .channel('inventory-changes')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => { loadInventory(); })
@@ -368,27 +375,26 @@ export default function App() {
 
   const uploadAvatar = () => {
     Alert.alert('Profile Picture', 'Choose a source', [
-      { text: 'Take Photo', onPress: async () => { const r = await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [1,1], quality: 0.7 }); if (!r.canceled) processAvatarUpload(r.assets[0].uri); } },
-      { text: 'Choose from Library', onPress: async () => { const r = await ImagePicker.launchImageLibraryAsync({ allowsEditing: true, aspect: [1,1], quality: 0.7, mediaTypes: ImagePicker.MediaTypeOptions.Images }); if (!r.canceled) processAvatarUpload(r.assets[0].uri); } },
+      { text: 'Take Photo', onPress: async () => { const r = await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [1,1], quality: 0.7, base64: true }); if (!r.canceled) processAvatarUpload(r.assets[0].uri, r.assets[0].base64); } },
+      { text: 'Choose from Library', onPress: async () => { const r = await ImagePicker.launchImageLibraryAsync({ allowsEditing: true, aspect: [1,1], quality: 0.7, mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true }); if (!r.canceled) processAvatarUpload(r.assets[0].uri, r.assets[0].base64); } },
       { text: 'Cancel', style: 'cancel' }
     ]);
   };
 
-  const processAvatarUpload = async (uri) => {
+  const processAvatarUpload = async (uri, base64) => {
+    if (!base64) { Alert.alert('Upload failed', 'Could not read image.'); return; }
     setUploadingAvatar(true);
     try {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const reader = new FileReader();
-      reader.readAsArrayBuffer(blob);
-      await new Promise((resolve) => { reader.onloadend = resolve; });
       const filePath = `${user.id}.jpg`;
-      const { error: uploadError } = await supabase.storage.from('avatars').upload(filePath, reader.result, { contentType: 'image/jpeg', upsert: true });
+      const byteArray = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, byteArray, { contentType: 'image/jpeg', upsert: true });
       if (uploadError) throw uploadError;
       const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(filePath);
       await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', user.id);
       setProfileAvatar(publicUrl + '?t=' + Date.now());
-    } catch (e) { Alert.alert('Upload failed', e.message); }
+    } catch (e) { Alert.alert('Upload failed', friendlyError(e, 'Could not upload profile picture.')); }
     finally { setUploadingAvatar(false); }
   };
 
@@ -809,6 +815,10 @@ export default function App() {
   if (!user) return <AuthScreen />;
   if (!householdId) return <HouseholdScreen user={user} onHouseholdJoined={handleHouseholdJoined} />;
 
+  if (showOnboarding) {
+    return <OnboardingScreen onDone={() => setShowOnboarding(false)} />;
+  }
+
   if (activeTab === 'scan' && scanning) {
     return (
       <View style={{ flex: 1 }}>
@@ -861,10 +871,10 @@ export default function App() {
                 </TouchableOpacity>
               ))}
             </ScrollView>
-            <TouchableOpacity style={styles.sortBtn} onPress={() => setCompactView(prev => !prev)}>
+            <TouchableOpacity style={styles.sortBtn} onPress={() => setCompactView(prev => !prev)} accessibilityLabel={compactView ? 'Switch to list view' : 'Switch to compact view'}>
               <Ionicons name={compactView ? 'grid-outline' : 'list-outline'} size={16} color="white" />
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.sortBtn, { marginLeft: 6 }]} onPress={() => setShowSortOptions(!showSortOptions)}>
+            <TouchableOpacity style={[styles.sortBtn, { marginLeft: 6 }]} onPress={() => setShowSortOptions(!showSortOptions)} accessibilityLabel="Sort inventory">
               <Text style={styles.sortBtnText}>⇅ Sort</Text>
             </TouchableOpacity>
           </View>
@@ -893,11 +903,11 @@ export default function App() {
                   <Text style={styles.compactName} numberOfLines={1}>{item.name}</Text>
                   {isLowStock(item.quantity, item) && <Text style={styles.compactLowStock}>⚠️</Text>}
                   <View style={styles.qtyControls}>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, -1)}><Text style={styles.qtyBtnText}>−</Text></TouchableOpacity>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, -1)} accessibilityLabel={`Decrease quantity of ${item.name}`}><Text style={styles.qtyBtnText}>−</Text></TouchableOpacity>
                     <Text style={[styles.qtyNumber, isLowStock(item.quantity, item) && styles.qtyLow]}>{item.quantity}</Text>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, 1)}><Text style={styles.qtyBtnText}>+</Text></TouchableOpacity>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQuantity(item.id, 1)} accessibilityLabel={`Increase quantity of ${item.name}`}><Text style={styles.qtyBtnText}>+</Text></TouchableOpacity>
                   </View>
-                  <TouchableOpacity onPress={() => deleteItem(item.id)}><Text style={styles.deleteBtn}>✕</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => deleteItem(item.id)} accessibilityLabel={`Delete ${item.name}`}><Text style={styles.deleteBtn}>✕</Text></TouchableOpacity>
                 </View>
               )}
             />
@@ -926,11 +936,11 @@ export default function App() {
                     </View>
                   </View>
                   <View style={styles.qtyControls}>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, -1); }}><Text style={styles.qtyBtnText}>−</Text></TouchableOpacity>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, -1); }} accessibilityLabel={`Decrease quantity of ${item.name}`}><Text style={styles.qtyBtnText}>−</Text></TouchableOpacity>
                     <Text style={[styles.qtyNumber, isLowStock(item.quantity, item) && styles.qtyLow]}>{item.quantity}</Text>
-                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, 1); }}><Text style={styles.qtyBtnText}>+</Text></TouchableOpacity>
+                    <TouchableOpacity style={styles.qtyBtn} onPress={(e) => { e.stopPropagation?.(); changeQuantity(item.id, 1); }} accessibilityLabel={`Increase quantity of ${item.name}`}><Text style={styles.qtyBtnText}>+</Text></TouchableOpacity>
                   </View>
-                  <TouchableOpacity onPress={(e) => { e.stopPropagation?.(); deleteItem(item.id); }}><Text style={styles.deleteBtn}>✕</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={(e) => { e.stopPropagation?.(); deleteItem(item.id); }} accessibilityLabel={`Delete ${item.name}`}><Text style={styles.deleteBtn}>✕</Text></TouchableOpacity>
                 </TouchableOpacity>
               )}
             />
@@ -1036,7 +1046,7 @@ export default function App() {
         <ScrollView style={styles.screen}>
           <Text style={styles.title}>Profile</Text>
           <View style={styles.profileCard}>
-            <TouchableOpacity onPress={uploadAvatar} style={styles.avatarContainer}>
+            <TouchableOpacity onPress={uploadAvatar} style={styles.avatarContainer} accessibilityLabel="Change profile picture">
               {uploadingAvatar ? <View style={styles.avatarPlaceholder}><ActivityIndicator color="#27ae60" /></View>
                 : profileAvatar ? <Image source={{ uri: profileAvatar }} style={styles.avatarImage} />
                 : <View style={styles.avatarPlaceholder}><Ionicons name="person-circle-outline" size={60} color="#2c3e50" /></View>}
@@ -1197,7 +1207,7 @@ export default function App() {
           <Ionicons name={activeTab === 'add' ? 'add-circle' : 'add-circle-outline'} size={24} color={activeTab === 'add' ? '#27ae60' : '#999'} />
           <Text style={[styles.tabLabel, activeTab === 'add' && styles.tabLabelActive]}>Add</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('scan')}>
+        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('scan')} accessibilityLabel="Scan a barcode">
           <View style={styles.scanTabBtn}><Ionicons name="barcode-outline" size={28} color="white" /></View>
           <Text style={[styles.tabLabel, activeTab === 'scan' && styles.tabLabelActive]}>Scan</Text>
         </TouchableOpacity>
