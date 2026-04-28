@@ -1,5 +1,5 @@
 // ─── IMPORTS ───────────────────────────────────────────────────────────────
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity, FlatList,
   TextInput, Alert, Image, ActivityIndicator, ScrollView, Share, Modal
@@ -21,6 +21,7 @@ import {
 } from './validators';
 import NetInfo from '@react-native-community/netinfo';
 import * as FileSystem from 'expo-file-system';
+import * as Haptics from 'expo-haptics';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
@@ -442,6 +443,7 @@ export default function App() {
       setInventory(prev => [...prev, newItem]);
       setProductName(''); setQuantity('1'); setProductImage(null); setProductImageBase64(null);
       setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setLowStockThreshold('2');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setActiveTab('inventory');
     } catch (e) {
       Alert.alert('Error', friendlyError(e, 'Failed to add item. Please try again.'));
@@ -451,6 +453,7 @@ export default function App() {
   };
 
   const deleteItem = async (id) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       const { error } = await supabase.from('inventory').delete().eq('id', id);
       if (error) throw error;
@@ -459,6 +462,7 @@ export default function App() {
   };
 
   const changeQuantity = async (id, delta) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const item = inventory.find(i => i.id === id);
     if (!item) return;
     const newQty = Math.max(0, parseInt(item.quantity) + delta);
@@ -500,19 +504,7 @@ export default function App() {
   const saveToSharedBarcodeCache = async (barcode, name, category, imageUri) => {
     try {
       let imageUrl = null;
-      if (imageUri && imageUri.startsWith('file')) {
-        const response = await fetch(imageUri);
-        const blob = await response.blob();
-        const reader = new FileReader();
-        reader.readAsArrayBuffer(blob);
-        await new Promise((resolve) => { reader.onloadend = resolve; });
-        const filePath = `${barcode}.jpg`;
-        const { error: uploadError } = await supabase.storage.from('barcode-images').upload(filePath, reader.result, { contentType: 'image/jpeg', upsert: true });
-        if (!uploadError) {
-          const { data: { publicUrl } } = supabase.storage.from('barcode-images').getPublicUrl(filePath);
-          imageUrl = publicUrl;
-        }
-      } else if (imageUri && imageUri.startsWith('http')) {
+      if (imageUri && imageUri.startsWith('http')) {
         imageUrl = imageUri;
       }
       await supabase.from('barcode_cache').upsert([{ barcode, name, category, image_url: imageUrl, created_by: user.id }], { onConflict: 'barcode', ignoreDuplicates: true });
@@ -529,16 +521,13 @@ export default function App() {
       const { error: uploadError } = await supabase.storage
         .from('product-images')
         .upload(fileName, byteArray, { contentType: 'image/jpeg', upsert: false });
-      if (uploadError) {
-        Alert.alert('Upload Error', JSON.stringify(uploadError));
-        return null;
-      }
+      if (uploadError) throw uploadError;
       const { data: { publicUrl } } = supabase.storage
         .from('product-images')
         .getPublicUrl(fileName);
       return publicUrl;
     } catch (e) {
-      Alert.alert('Upload Exception', String(e));
+      console.warn('Image upload failed:', e);
       return null;
     }
   };
@@ -748,7 +737,7 @@ export default function App() {
     return parseInt(qty) <= threshold;
   };
 
-  const getFilteredAndSorted = () => {
+  const getFilteredAndSorted = useMemo(() => {
     let result = [...inventory];
     if (searchQuery.trim() !== '') {
       result = result.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -760,7 +749,7 @@ export default function App() {
     else if (sortBy === 'category') result.sort((a, b) => (a.category || '').localeCompare(b.category || ''));
     else if (sortBy === 'lowstock') result.sort((a, b) => parseInt(a.quantity) - parseInt(b.quantity));
     return result;
-  };
+  }, [inventory, searchQuery, filterCategory, sortBy]);
 
   const shoppingList = inventory.filter(item => parseInt(item.quantity) === 0);
   const shoppingListParents = MAIN_CATEGORIES.filter(cat =>
@@ -890,14 +879,14 @@ export default function App() {
           )}
           {loading ? (
             <View style={styles.emptyState}><ActivityIndicator size="large" color="#2c3e50" /><Text style={styles.emptyStateText}>Loading inventory...</Text></View>
-          ) : getFilteredAndSorted().length === 0 ? (
+          ) : getFilteredAndSorted.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateIcon}>📦</Text>
               <Text style={styles.emptyStateText}>{searchQuery || filterCategory !== 'all' ? 'No items match your search.' : 'No items yet. Tap Scan to get started!'}</Text>
             </View>
           ) : compactView ? (
             <FlatList
-              data={getFilteredAndSorted()} keyExtractor={item => item.id}
+              data={getFilteredAndSorted} keyExtractor={item => item.id}
               renderItem={({ item }) => (
                 <View style={[styles.compactItem, isLowStock(item.quantity, item) && styles.itemLowStock]}>
                   <View style={[styles.compactDot, { backgroundColor: getCategoryColor(item.category) }]} />
@@ -914,7 +903,7 @@ export default function App() {
             />
           ) : (
             <FlatList
-              data={getFilteredAndSorted()} keyExtractor={item => item.id}
+              data={getFilteredAndSorted} keyExtractor={item => item.id}
               renderItem={({ item }) => (
                 <TouchableOpacity style={[styles.item, isLowStock(item.quantity, item) && styles.itemLowStock]} onPress={() => setSelectedItem(item)} activeOpacity={0.75}>
                   {item.image ? <Image source={{ uri: item.image }} style={styles.itemImage} /> : <View style={styles.itemImagePlaceholder}><Ionicons name="image-outline" size={20} color="#bbb" /></View>}
