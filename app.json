@@ -28,7 +28,7 @@
       "edgeToEdgeEnabled": true,
       "package": "com.murphys611.HomeInventory",
       "allowBackup": false,
-      "versionCode" : 1
+      "versionCode": 1
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -44,6 +44,17 @@
     },
     "updates": {
       "url": "https://u.expo.dev/08ee532e-07ce-4c3f-aea1-7ba9c0e86be5"
-    }
+    },
+    "plugins": [
+      "@sentry/react-native",
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "project": "react-native",
+          "organization": "murphys611"
+        }
+      ]
+    ]
   }
 }

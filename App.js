@@ -23,6 +23,21 @@ import NetInfo from '@react-native-community/netinfo';
 import * as FileSystem from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
 import OnboardingScreen from './OnboardingScreen';
+import * as Sentry from '@sentry/react-native';
+
+Sentry.init({
+  dsn: 'https://0eb903efe2509bf3bcd3b0f7ea63337d@o4511299869802496.ingest.us.sentry.io/4511299869999104',
+
+  // Adds more context data to events (IP address, cookies, user, etc.)
+  // For more information, visit: https://docs.sentry.io/platforms/react-native/data-management/data-collected/
+  sendDefaultPii: true,
+
+  // Enable Logs
+  enableLogs: true,
+
+  // uncomment the line below to enable Spotlight (https://spotlightjs.com)
+  // spotlight: __DEV__,
+});
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
@@ -79,7 +94,7 @@ Notifications.setNotificationHandler({
 });
 
 // ─── MAIN APP COMPONENT ────────────────────────────────────────────────────
-export default function App() {
+export default Sentry.wrap(function App() {
 
   // ── Auth State ──────────────────────────────────────────────────────────
   const [user, setUser] = useState(null);
@@ -1226,7 +1241,7 @@ export default function App() {
 
     </View>
   );
-}
+});
 
 // ─── STYLES ─────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
