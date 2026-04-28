@@ -27,7 +27,8 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.murphys611.HomeInventory",
-      "allowBackup": false
+      "allowBackup": false,
+      "versionCode" : 1
     },
     "web": {
       "favicon": "./assets/favicon.png"

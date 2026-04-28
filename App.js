@@ -19,6 +19,8 @@ import {
   validateThreshold, validateExpirationDate, friendlyError,
   MAX_PRODUCT_NAME_LENGTH, MAX_DISPLAY_NAME_LENGTH,
 } from './validators';
+import NetInfo from '@react-native-community/netinfo';
+import * as FileSystem from 'expo-file-system';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
@@ -112,6 +114,8 @@ export default function App() {
   const [scanStatus, setScanStatus] = useState('');
   const [expirationDate, setExpirationDate] = useState('');
   const [lowStockThreshold, setLowStockThreshold] = useState('2');
+  const [addingItem, setAddingItem] = useState(false);
+  const [productImageBase64, setProductImageBase64] = useState(null);
 
   // ── Shopping List State ─────────────────────────────────────────────────
   const [checkedItems, setCheckedItems] = useState({});
@@ -140,6 +144,9 @@ export default function App() {
   // ── Refs ────────────────────────────────────────────────────────────────
   const scanned = useRef(false);
   const cameraReady = useRef(false);
+
+  //Offline State
+  const [isOffline, setIsOffline] = useState(false);
 
   // ─── DEEP LINK HANDLER ─────────────────────────────────────────────────
   useEffect(() => {
@@ -231,6 +238,12 @@ export default function App() {
     }
   }, [activeTab]);
 
+  useEffect(() => {
+  const unsubscribe = NetInfo.addEventListener(state => {
+    setIsOffline(!state.isConnected);
+  });
+  return () => unsubscribe();
+}, []);
   // ─── HOUSEHOLD FUNCTIONS ────────────────────────────────────────────────
 
   // Takes userId as a parameter so it never reads from a stale closure
@@ -404,32 +417,37 @@ export default function App() {
   };
 
   const addItem = async () => {
-    const sanitizedName = sanitizeText(productName, MAX_PRODUCT_NAME_LENGTH);
-    if (!sanitizedName) { Alert.alert('Invalid Name', 'Please enter a product name.'); return; }
-    const sanitizedQty = validateQuantity(quantity);
-    if (sanitizedQty === null) { Alert.alert('Invalid Quantity', 'Please enter a valid quantity (0–9999).'); return; }
-    const dateResult = validateExpirationDate(expirationDate);
-    if (dateResult === false) { Alert.alert('Invalid Date', 'Please enter a date in MM/DD/YYYY or YYYY-MM-DD format, or leave it blank.'); return; }
-    const sanitizedThreshold = validateThreshold(lowStockThreshold);
-    const sanitizedBarcode = sanitizeBarcode(currentBarcode);
-    const storedImageUrl = await uploadInventoryImage(productImage);
-    const newItem = {
-      id: Date.now().toString(), barcode: sanitizedBarcode, name: sanitizedName,
-      quantity: sanitizedQty.toString(), image: storedImageUrl, category: selectedCategory,
-      household_id: householdId, expiration_date: dateResult || null, low_stock_threshold: sanitizedThreshold,
-    };
-    if (sanitizedBarcode) {
-      saveToLocalCache(sanitizedBarcode, sanitizedName, selectedCategory, storedImageUrl);
-      saveToSharedBarcodeCache(sanitizedBarcode, sanitizedName, selectedCategory, storedImageUrl);
-    }
+    if (addingItem) return;
+    setAddingItem(true);
     try {
+      const sanitizedName = sanitizeText(productName, MAX_PRODUCT_NAME_LENGTH);
+      if (!sanitizedName) { Alert.alert('Invalid Name', 'Please enter a product name.'); return; }
+      const sanitizedQty = validateQuantity(quantity);
+      if (sanitizedQty === null) { Alert.alert('Invalid Quantity', 'Please enter a valid quantity (0–9999).'); return; }
+      const dateResult = validateExpirationDate(expirationDate);
+      if (dateResult === false) { Alert.alert('Invalid Date', 'Please enter a date in MM/DD/YYYY or YYYY-MM-DD format, or leave it blank.'); return; }
+      const sanitizedThreshold = validateThreshold(lowStockThreshold);
+      const sanitizedBarcode = sanitizeBarcode(currentBarcode);
+      const storedImageUrl = await uploadInventoryImage(productImage, productImageBase64);      const newItem = {
+        id: Date.now().toString(), barcode: sanitizedBarcode, name: sanitizedName,
+        quantity: sanitizedQty.toString(), image: storedImageUrl, category: selectedCategory,
+        household_id: householdId, expiration_date: dateResult || null, low_stock_threshold: sanitizedThreshold,
+      };
+      if (sanitizedBarcode) {
+        saveToLocalCache(sanitizedBarcode, sanitizedName, selectedCategory, storedImageUrl);
+        saveToSharedBarcodeCache(sanitizedBarcode, sanitizedName, selectedCategory, storedImageUrl);
+      }
       const { error } = await supabase.from('inventory').insert([newItem]);
       if (error) throw error;
       setInventory(prev => [...prev, newItem]);
-      setProductName(''); setQuantity('1'); setProductImage(null);
+      setProductName(''); setQuantity('1'); setProductImage(null); setProductImageBase64(null);
       setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setLowStockThreshold('2');
       setActiveTab('inventory');
-    } catch (e) { Alert.alert('Error', friendlyError(e, 'Failed to add item. Please try again.')); }
+    } catch (e) {
+      Alert.alert('Error', friendlyError(e, 'Failed to add item. Please try again.'));
+    } finally {
+      setAddingItem(false);
+    }
   };
 
   const deleteItem = async (id) => {
@@ -501,24 +519,26 @@ export default function App() {
     } catch (e) { console.log('Failed to save to shared cache', e); }
   };
 
-  const uploadInventoryImage = async (uri) => {
+  const uploadInventoryImage = async (uri, base64) => {
     if (!uri) return null;
     if (uri.startsWith('http')) return uri;
+    if (!base64) return null;
     try {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const reader = new FileReader();
-      reader.readAsArrayBuffer(blob);
-      await new Promise((resolve) => { reader.onloadend = resolve; });
-      const filePath = `${user.id}-${Date.now()}.jpg`;
+      const fileName = `${user.id}-${Date.now()}.jpg`;
+      const byteArray = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
       const { error: uploadError } = await supabase.storage
         .from('product-images')
-        .upload(filePath, reader.result, { contentType: 'image/jpeg', upsert: false });
-      if (uploadError) throw uploadError;
-      const { data: { publicUrl } } = supabase.storage.from('product-images').getPublicUrl(filePath);
+        .upload(fileName, byteArray, { contentType: 'image/jpeg', upsert: false });
+      if (uploadError) {
+        Alert.alert('Upload Error', JSON.stringify(uploadError));
+        return null;
+      }
+      const { data: { publicUrl } } = supabase.storage
+        .from('product-images')
+        .getPublicUrl(fileName);
       return publicUrl;
     } catch (e) {
-      console.warn('Image upload failed, proceeding without image:', e);
+      Alert.alert('Upload Exception', String(e));
       return null;
     }
   };
@@ -689,13 +709,24 @@ export default function App() {
   // ─── IMAGE PICKER ───────────────────────────────────────────────────────
 
   const pickImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [1,1], quality: 0.5 });
-    if (!result.canceled) setProductImage(result.assets[0].uri);
+    const result = await ImagePicker.launchImageLibraryAsync({ 
+      mediaTypes: ImagePicker.MediaTypeOptions.Images, 
+      allowsEditing: true, aspect: [1,1], quality: 0.5, base64: true,
+    });
+    if (!result.canceled) {
+      setProductImage(result.assets[0].uri);
+      setProductImageBase64(result.assets[0].base64);
+    }
   };
 
   const takePhoto = async () => {
-    const result = await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [1,1], quality: 0.5 });
-    if (!result.canceled) setProductImage(result.assets[0].uri);
+    const result = await ImagePicker.launchCameraAsync({ 
+      allowsEditing: true, aspect: [1,1], quality: 0.5, base64: true,
+    });
+    if (!result.canceled) {
+      setProductImage(result.assets[0].uri);
+      setProductImageBase64(result.assets[0].base64);
+    }
   };
 
   // ─── HELPER FUNCTIONS ───────────────────────────────────────────────────
@@ -818,6 +849,12 @@ export default function App() {
   // ─── MAIN APP UI ────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
+      
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>⚠️ No internet connection</Text>
+        </View>
+      )}
 
       {/* ── INVENTORY TAB ── */}
       {activeTab === 'inventory' && (
@@ -937,8 +974,12 @@ export default function App() {
           )}
           <Text style={styles.formLabel}>Low Stock Alert <Text style={{ color: '#999', fontWeight: 'normal' }}>(alert when qty reaches this)</Text></Text>
           <TextInput style={[styles.formInput, { width: 80 }]} placeholder="2" placeholderTextColor="#999" value={lowStockThreshold} onChangeText={setLowStockThreshold} keyboardType="numeric" maxLength={3} />
-          <TouchableOpacity style={styles.confirmBtn} onPress={addItem}><Text style={styles.confirmBtnText}>Add to Inventory</Text></TouchableOpacity>
-          <TouchableOpacity style={styles.cancelFormBtn} onPress={() => { setProductName(''); setQuantity('1'); setProductImage(null); setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setActiveTab('inventory'); }}>
+          <TouchableOpacity style={[styles.confirmBtn, addingItem && { opacity: 0.7 }]} onPress={addItem} disabled={addingItem}>
+            {addingItem
+              ? <ActivityIndicator color="white" />
+              : <Text style={styles.confirmBtnText}>Add to Inventory</Text>}
+              </TouchableOpacity>          
+          <TouchableOpacity style={styles.cancelFormBtn} onPress={() => { setProductName(''); setQuantity('1'); setProductImage(null); setProductImageBase64(null); setCurrentBarcode(null); setSelectedCategory('food'); setExpirationDate(''); setActiveTab('inventory'); }}>
             <Text style={styles.cancelFormBtnText}>Cancel</Text>
           </TouchableOpacity>
         </ScrollView>
@@ -1335,4 +1376,6 @@ const styles = StyleSheet.create({
   linkModalItemCategory: { fontSize: 11, color: '#999', marginTop: 2 },
   deleteAccountBtn: { borderWidth: 1, borderColor: '#e74c3c', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 16 },
   deleteAccountBtnText: { color: '#e74c3c', fontSize: 16, fontWeight: 'bold' },
+  offlineBanner: { backgroundColor: '#e74c3c', paddingVertical: 8, alignItems: 'center', paddingTop: 48 },
+  offlineBannerText: { color: 'white', fontSize: 13, fontWeight: 'bold' },
 });
